@@ -1,4 +1,4 @@
-﻿// dsh-lite-pet — browser half. Adds exactly one switch row to 设置 → 通用; the
+// dsh-lite-pet — browser half. Adds exactly one switch row to 设置 → 通用; the
 // row drives the Host's `/api/dsh-lite-pet` endpoints, nothing else is registered.
 window.__ModuleLoader__.load({
   id: 'dsh-lite-pet',
@@ -54,6 +54,16 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         void load()
+      }, [load])
+
+      // The pet can also be closed from its own right-click menu, so re-read the
+      // state whenever the window regains focus.
+      useEffect(() => {
+        const onFocus = () => {
+          void load()
+        }
+        window.addEventListener('focus', onFocus)
+        return () => window.removeEventListener('focus', onFocus)
       }, [load])
 
       const toggle = useCallback(async () => {
