@@ -31,18 +31,8 @@ jobs:
               -m "chore(vendor): add upstream dsh-pet assets"
           fi
       - name: Pull the upstream subtree
-        id: pull
         run: |
-          before=$(git rev-parse HEAD)
           git subtree pull --prefix=vendor/upstream https://github.com/PC2005-cloud/dsh-pet.git main --squash \
             -m "chore(vendor): sync upstream dsh-pet assets"
-          after=$(git rev-parse HEAD)
-          if [ "$before" = "$after" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "upstream is unchanged"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Push the sync commit
-        if: steps.pull.outputs.changed == 'true'
+      - name: Push whatever the subtree produced
         run: git push origin HEAD:main
