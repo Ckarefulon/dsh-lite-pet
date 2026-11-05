@@ -18,6 +18,8 @@ namespace DshLitePet
         public const int HTTRANSPARENT = -1;
         public const int HTCLIENT = 1;
         public const int WM_NCHITTEST = 0x0084;
+        public const int WM_MOUSEMOVE = 0x0200;
+        public const int WM_LBUTTONDOWN = 0x0201;
         public const int WM_LBUTTONUP = 0x0202;
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_TIMER = 0x0113;
@@ -31,6 +33,8 @@ namespace DshLitePet
         public const uint MF_STRING = 0x00000000;
         public const uint MF_POPUP = 0x00000010;
         public const uint MF_SEPARATOR = 0x00000800;
+        public const uint MF_CHECKED = 0x00000008;
+        public const uint MF_DISABLED = 0x00000002;
         public const uint TPM_RIGHTBUTTON = 0x0002;
         public const uint TPM_NONOTIFY = 0x0080;
         public const uint TPM_RETURNCMD = 0x0100;
@@ -183,6 +187,12 @@ namespace DshLitePet
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
 
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetCapture(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool ReleaseCapture();
+
 
         [DllImport("user32.dll")]
         public static extern IntPtr LoadCursor(IntPtr instance, IntPtr cursorName);
@@ -229,6 +239,16 @@ namespace DshLitePet
             {
                 Marshal.Copy(bgra, 0, Bits, bgra.Length);
             }
+
+            /// <summary>Copies a bitmap's rows (which may be padded) into the DIB.</summary>
+            public void UploadRows(IntPtr source, int sourceStride, int rowBytes, int rows)
+            {
+                for (int y = 0; y < rows; y++)
+                    CopyMemory(Bits + y * rowBytes, source + y * sourceStride, rowBytes);
+            }
+
+            [DllImport("kernel32.dll", EntryPoint = "RtlMoveMemory")]
+            private static extern void CopyMemory(IntPtr destination, IntPtr source, int length);
 
             public void Dispose()
             {

@@ -60,7 +60,7 @@ export function apply(ctx, config) {
   timer.unref?.()
   ctx.effect(() => () => clearInterval(timer), 'dsh-lite-pet: push timer')
 
-  wireAgentEvents(ctx, runtime, profile)
+  wireAgentEvents(ctx, runtime)
   wireRoutes(ctx, runtime, profile)
 
   if (!supported) {
@@ -166,19 +166,12 @@ function ensurePet(ctx, runtime, profile) {
   child.on('exit', () => {
     runtime.pet = null
     runtime.ready = false
+    // A crash or a lost window never flips the user's switch: retry while the
+    // user still wants the pet, with a capped backoff.
     if (runtime.disposing || !runtime.enabled) return
-    if (runtime.restarts >= MAX_RESTARTS) {
-      ctx.logger?.warn?.('[dsh-lite-pet] the pet exited repeatedly; staying off until re-enabled')
-      profile.enabled = false
-      try {
-        writeEnabled(profile.settings, false)
-      } catch {
-        /* best effort */
-      }
-      return
-    }
     runtime.restarts += 1
-    const delay = RESTART_DELAY_MS * runtime.restarts
+    const delay = Math.min(RESTART_DELAY_MS * runtime.restarts, 30_000)
+    ctx.logger?.warn?.(`[dsh-lite-pet] the pet exited; restarting in ${delay}ms`)
     setTimeout(() => ensurePet(ctx, runtime, profile), delay).unref?.()
   })
 }
@@ -186,6 +179,7 @@ function ensurePet(ctx, runtime, profile) {
 function handlePetLine(ctx, runtime, profile, message) {
   if (message?.t === 'ready') {
     runtime.ready = true
+    runtime.restarts = 0
     // Re-send whatever the pet should be showing right now.
     runtime.lastSent = ''
     pushState(ctx, runtime, profile)
@@ -568,6 +562,8 @@ function stopPet(runtime) {
   }, 1500)
   timer.unref?.()
 }
+
+
 
 
 
