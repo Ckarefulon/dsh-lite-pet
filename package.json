@@ -1,6 +1,6 @@
 {
   "name": "dsh-lite-pet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "轻量系统级桌宠：原生进程逐像素透明渲染，工作正文/等待确认/完成提示与余额查询联动，点击穿透",
   "type": "module",
   "main": "index.js",

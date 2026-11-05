@@ -1,4 +1,4 @@
-﻿// dsh-lite-pet desktop helper: one layered, click-through window that plays
+// dsh-lite-pet desktop helper: one layered, click-through window that plays
 // H.264 color + alpha tracks through Media Foundation and draws its own bubble.
 using System;
 using System.Collections.Generic;
@@ -54,11 +54,18 @@ namespace DshLitePet
         private static bool _dragPet;
         private static bool _dragMoved;
         private static long _lastHitCheck;
+        private static long _dragStartAt;
         private static int _dragStartX;
         private static int _dragStartY;
         private static int _dragStartOffset;
         private static int _dragStartWindowX;
         private static int _dragStartWindowY;
+        private static IntPtr _handCursor;
+        private static byte[] _fadeSnapshot;
+        private static long _fadeStart = -1;
+        private static long _lastFrameAt;
+        private const long FadeMs = 260;
+        private const long StallTimeoutMs = 2000;
 
         private static void Main(string[] args)
         {
@@ -121,6 +128,7 @@ namespace DshLitePet
                 lpszClassName = WindowClass,
                 hCursor = Native.LoadCursor(IntPtr.Zero, (IntPtr)32512),
             };
+            _handCursor = Native.LoadCursor(IntPtr.Zero, (IntPtr)32649);
             Native.RegisterClassEx(ref wc);
 
             MeasureWindow();
@@ -221,6 +229,13 @@ namespace DshLitePet
                     return IntPtr.Zero;
                 case Native.WM_NCHITTEST:
                     return (IntPtr)HitTest(lParam);
+                case Native.WM_SETCURSOR:
+                    if (((long)lParam & 0xFFFF) == Native.HTCLIENT)
+                    {
+                        Native.SetCursor(_handCursor);
+                        return (IntPtr)1;
+                    }
+                    return Native.DefWindowProc(hwnd, msg, wParam, lParam);
                 case Native.WM_LBUTTONDOWN:
                     OnLeftDown(lParam);
                     return IntPtr.Zero;
@@ -232,6 +247,9 @@ namespace DshLitePet
                     return IntPtr.Zero;
                 case Native.WM_RBUTTONUP:
                     OpenMenu();
+                    return IntPtr.Zero;
+                case Native.WM_CAPTURECHANGED:
+                    _dragging = false;
                     return IntPtr.Zero;
                 case Native.WM_DESTROY:
                     Native.KillTimer(hwnd, (IntPtr)TimerId);
@@ -261,17 +279,17 @@ namespace DshLitePet
         private static void UpdateHitState()
         {
             if (_canvas == null || _hwnd == IntPtr.Zero) return;
+            long now = Uptime.ElapsedMilliseconds;
             if (_dragging)
             {
-                // Self-heal a lost WM_LBUTTONUP (the button is physically up again).
-                if ((Native.GetAsyncKeyState(0x01) & 0x8000) == 0)
+                // Backstop against a lost WM_LBUTTONUP; a capture change also ends the drag.
+                if (now - _dragStartAt > 10000)
                 {
                     _dragging = false;
                     Native.ReleaseCapture();
                 }
                 return;
             }
-            long now = Uptime.ElapsedMilliseconds;
             if (now - _lastHitCheck < 30) return;
             _lastHitCheck = now;
             Native.POINT cursor;
@@ -302,6 +320,7 @@ namespace DshLitePet
                 _dragging = true;
                 _dragPet = false;
                 _dragMoved = false;
+                _dragStartAt = Uptime.ElapsedMilliseconds;
                 _dragStartY = cursor.Y;
                 _dragStartOffset = _canvas.BubbleOffsetY;
                 Native.SetCapture(_hwnd);
@@ -312,6 +331,7 @@ namespace DshLitePet
                 _dragging = true;
                 _dragPet = true;
                 _dragMoved = false;
+                _dragStartAt = Uptime.ElapsedMilliseconds;
                 _dragStartX = cursor.X;
                 _dragStartY = cursor.Y;
                 _dragStartWindowX = _windowX;
@@ -322,17 +342,30 @@ namespace DshLitePet
 
         private static void OnMouseMove(IntPtr lParam)
         {
+            UpdateDrag();
+        }
+
+        /// <summary>
+        /// Drags are polled from the timer as well as driven by WM_MOUSEMOVE: a programmatic
+        /// cursor move (and some pointer devices) delivers no move messages, which used to
+        /// make the pet impossible to drag.
+        /// </summary>
+        private static void UpdateDrag()
+        {
             if (!_dragging) return;
             Native.POINT cursor;
-            Native.GetCursorPos(out cursor);
+            if (!Native.GetCursorPos(out cursor)) return;
             if (_dragPet)
             {
                 int dx = cursor.X - _dragStartX;
                 int dy = cursor.Y - _dragStartY;
                 if (Math.Abs(dx) >= DragThreshold || Math.Abs(dy) >= DragThreshold) _dragMoved = true;
                 if (!_dragMoved) return;
-                _windowX = _dragStartWindowX + dx;
-                _windowY = _dragStartWindowY + dy;
+                int nx = _dragStartWindowX + dx;
+                int ny = _dragStartWindowY + dy;
+                if (nx == _windowX && ny == _windowY) return;
+                _windowX = nx;
+                _windowY = ny;
                 Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, 0, 0,
                     Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
                 return;
@@ -405,6 +438,7 @@ namespace DshLitePet
             while (_ipc.TryRead(out line)) HandleCommand(line);
 
             UpdateHitState();
+            UpdateDrag();
 
             long now = Uptime.ElapsedMilliseconds;
             if (_bubbleHideAt >= 0 && now >= _bubbleHideAt)
@@ -415,6 +449,14 @@ namespace DshLitePet
 
             if (_clip == null) { PlayKind("idle", true, 0); return; }
 
+            // Watchdog: a decoder that stopped producing frames must not freeze the pet.
+            if (now - _lastFrameAt > StallTimeoutMs)
+            {
+                _lastFrameAt = now;
+                PlayKind("idle", true, 0, true);
+                return;
+            }
+
             if (FrameClock.Elapsed.TotalMilliseconds >= _frameIndex * _frameMs)
             {
                 if (!_clip.TryReadFrame())
@@ -423,6 +465,7 @@ namespace DshLitePet
                     return;
                 }
                 _frameIndex++;
+                _lastFrameAt = now;
                 Present();
             }
             else if (_bubbleDirty)
@@ -437,6 +480,18 @@ namespace DshLitePet
             // must not leave the previous bubble behind.
             if (_clip != null)
                 _canvas.ComposePet(_clip.Color, _clip.Alpha, _clip.Width, _clip.Height);
+            if (_fadeStart >= 0 && _fadeSnapshot != null)
+            {
+                long elapsed = Uptime.ElapsedMilliseconds - _fadeStart;
+                if (elapsed >= FadeMs)
+                {
+                    _fadeStart = -1;
+                }
+                else
+                {
+                    _canvas.BlendFrom(_fadeSnapshot, elapsed / (double)FadeMs);
+                }
+            }
             _canvas.DrawBubble(_bubbleText, _bubbleDot);
             _bubbleDirty = false;
             if (_scale == 1.0)
@@ -572,7 +627,7 @@ namespace DshLitePet
             return trimmed.Length == 0 ? null : trimmed;
         }
 
-        private static void PlayKind(string kind, bool loop, int levelIndex)
+        private static void PlayKind(string kind, bool loop, int levelIndex, bool force = false)
         {
             CatalogEntry entry = null;
             if (kind == "balance")
@@ -586,11 +641,11 @@ namespace DshLitePet
             }
             if (entry == null)
             {
-                if (kind != "idle") { PlayKind("idle", true, 0); return; }
+                if (kind != "idle") { PlayKind("idle", true, 0, force); return; }
                 if (_catalog.Animations.Count == 0) return;
                 entry = _catalog.Animations[0];
             }
-            PlayClip(entry, loop);
+            PlayClip(entry, loop, force);
         }
 
         private static void PlayRandomAction()
@@ -602,11 +657,19 @@ namespace DshLitePet
             PlayClip(pool[Rng.Next(pool.Count)], false);
         }
 
-        private static void PlayClip(CatalogEntry entry, bool loop)
+        private static void PlayClip(CatalogEntry entry, bool loop, bool force = false)
         {
             if (_clip != null)
             {
-                if (_clip.Entry == entry && loop && !_oneShot) return;
+                if (!force && _clip.Entry == entry && loop && !_oneShot) return;
+                // Cross-fade from the frame that is on screen right now.
+                if (_canvas.Pixels != null)
+                {
+                    if (_fadeSnapshot == null || _fadeSnapshot.Length != _canvas.Pixels.Length)
+                        _fadeSnapshot = new byte[_canvas.Pixels.Length];
+                    Buffer.BlockCopy(_canvas.Pixels, 0, _fadeSnapshot, 0, _fadeSnapshot.Length);
+                    _fadeStart = Uptime.ElapsedMilliseconds;
+                }
                 _clip.Dispose();
                 _clip = null;
             }
@@ -628,10 +691,17 @@ namespace DshLitePet
             _oneShot = !loop;
             _frameIndex = 0;
             _bubbleDirty = true;
+            _lastFrameAt = Uptime.ElapsedMilliseconds;
             _frameMs = _clip.Entry.Fps > 0 ? 1000.0 / _clip.Entry.Fps : 1000.0 / 24.0;
             FrameClock.Restart();
         }
     }
 }
+
+
+
+
+
+
 
 

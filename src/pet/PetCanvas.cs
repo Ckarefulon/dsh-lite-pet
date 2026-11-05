@@ -1,4 +1,4 @@
-﻿// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble
+// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble
 // (which can be dragged vertically, so it is composited over the pet instead of living in a fixed strip).
 using System;
 using System.Drawing;
@@ -165,6 +165,27 @@ namespace DshLitePet
         public bool HitTestBubble(int localX, int localY)
         {
             return _bubbleVisible && _bubbleRect.Contains(localX, localY);
+        }
+
+        /// <summary>Cross-fades the pet area from a previous frame (t: 0 = old, 1 = new).</summary>
+        public unsafe void BlendFrom(byte[] snapshot, double t)
+        {
+            if (snapshot == null || snapshot.Length != Pixels.Length) return;
+            int weight = (int)(Math.Min(Math.Max(t, 0.0), 1.0) * 255);
+            fixed (byte* px = Pixels)
+            fixed (byte* old = snapshot)
+            {
+                for (int y = PetTop; y < Height; y++)
+                {
+                    int off = y * Width * 4;
+                    for (int i = 0; i < Width * 4; i++)
+                    {
+                        int a = old[off + i];
+                        int b = px[off + i];
+                        px[off + i] = (byte)(a + (b - a) * weight / 255);
+                    }
+                }
+            }
         }
 
         /// <summary>Redraws the bubble bitmap when its content or position changed, then composites it.</summary>
