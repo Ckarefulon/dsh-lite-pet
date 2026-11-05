@@ -1,4 +1,4 @@
-﻿// dsh-lite-pet desktop helper: one layered, click-through window that plays
+// dsh-lite-pet desktop helper: one layered, click-through window that plays
 // H.264 color + alpha tracks through Media Foundation and draws its own bubble.
 using System;
 using System.Collections.Generic;

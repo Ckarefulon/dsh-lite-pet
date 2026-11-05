@@ -86,11 +86,6 @@ namespace DshLitePet
             return result;
         }
 
-        public CatalogEntry ById(string id)
-        {
-            foreach (CatalogEntry entry in Animations) if (entry.Id == id) return entry;
-            return null;
-        }
     }
 
     /// <summary>Tiny JSON reader — the catalog and the host's IPC lines are the only JSON this process sees.</summary>

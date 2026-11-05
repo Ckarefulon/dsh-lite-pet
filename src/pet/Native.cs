@@ -12,7 +12,6 @@ namespace DshLitePet
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_NOACTIVATE = 0x08000000;
         public const int WS_EX_TOPMOST = 0x00000008;
-        public const int GWL_EXSTYLE = -20;
         public const int ULW_ALPHA = 0x00000002;
         public const byte AC_SRC_ALPHA = 0x01;
         public const int SW_SHOWNOACTIVATE = 4;
@@ -23,9 +22,6 @@ namespace DshLitePet
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_TIMER = 0x0113;
         public const int WM_DESTROY = 0x0002;
-        public const int WM_QUIT = 0x0012;
-        public const int WM_APP = 0x8000;
-        public const int WS_VISIBLE = 0x10000000;
 
         public const int HWND_TOPMOST = -1;
         public const int SWP_NOSIZE = 0x0001;
@@ -35,13 +31,10 @@ namespace DshLitePet
         public const uint MF_STRING = 0x00000000;
         public const uint MF_POPUP = 0x00000010;
         public const uint MF_SEPARATOR = 0x00000800;
-        public const uint MF_GRAYED = 0x00000001;
         public const uint TPM_RIGHTBUTTON = 0x0002;
         public const uint TPM_NONOTIFY = 0x0080;
         public const uint TPM_RETURNCMD = 0x0100;
 
-        public const int SM_CXSCREEN = 0;
-        public const int SM_CYSCREEN = 1;
         public const uint SPI_GETWORKAREA = 0x0030;
 
         [StructLayout(LayoutKind.Sequential)]
@@ -115,8 +108,6 @@ namespace DshLitePet
         [DllImport("user32.dll")]
         public static extern bool GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
 
-        [DllImport("user32.dll")]
-        public static extern bool PeekMessage(out MSG msg, IntPtr hwnd, uint min, uint max, uint remove);
 
         [DllImport("user32.dll")]
         public static extern bool TranslateMessage(ref MSG msg);
@@ -139,20 +130,12 @@ namespace DshLitePet
         [DllImport("user32.dll")]
         public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, int flags);
 
-        [DllImport("user32.dll")]
-        public static extern int GetWindowLong(IntPtr hwnd, int index);
 
-        [DllImport("user32.dll")]
-        public static extern int SetWindowLong(IntPtr hwnd, int index, int value);
 
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT pt);
 
-        [DllImport("user32.dll")]
-        public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
 
-        [DllImport("user32.dll")]
-        public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
 
         [DllImport("user32.dll")]
         public static extern bool ScreenToClient(IntPtr hwnd, ref POINT pt);
@@ -200,8 +183,6 @@ namespace DshLitePet
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
 
-        [DllImport("user32.dll")]
-        public static extern IntPtr SetCursor(IntPtr cursor);
 
         [DllImport("user32.dll")]
         public static extern IntPtr LoadCursor(IntPtr instance, IntPtr cursorName);

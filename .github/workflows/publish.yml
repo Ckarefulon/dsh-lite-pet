@@ -1,0 +1,63 @@
+name: publish
+
+# Pushing a version tag publishes the npm package (and a matching GitHub release).
+# Requires the repository secret NPM_TOKEN (granular token with publish rights).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  npm:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Ensure the upstream subtree exists
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -d vendor/upstream/dsh-pet ]; then
+            echo "subtree already present"
+          else
+            git subtree add --prefix=vendor/upstream https://github.com/PC2005-cloud/dsh-pet.git main --squash \
+              -m "chore(vendor): add upstream dsh-pet assets"
+          fi
+        shell: bash
+
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y --no-progress
+        shell: pwsh
+
+      - name: Transcode the media library
+        run: node tools/build-media.mjs
+        env:
+          FFMPEG: ffmpeg
+          FFPROBE: ffprobe
+
+      - name: Compile the native pet
+        run: node tools/build-pet.mjs
+
+      - name: Verify the package payload
+        run: node tools/prepack-check.mjs
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Attach the built helper to a GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

@@ -1,4 +1,4 @@
-﻿// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble.
+// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble.
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;

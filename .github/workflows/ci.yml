@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax-check the plugin halves and tools
+        run: |
+          node --check index.js
+          node --check client/index.js
+          node --check tools/build-media.mjs
+          node --check tools/build-pet.mjs
+          node --check tools/prepack-check.mjs
+      - name: Build the native pet
+        run: node tools/build-pet.mjs
+      - name: Confirm the helper binary exists
+        run: if (-not (Test-Path runtime/pet/DshLitePet.exe)) { exit 1 }
+        shell: pwsh

@@ -41,6 +41,7 @@ export function apply(ctx, config) {
   const settings = normalizeConfig(config)
   const profile = { settings, enabled: readEnabled(settings) }
   const runtime = createRuntime()
+  runtime.enabled = profile.enabled
 
   ctx.effect(() => () => {
     runtime.disposing = true
@@ -216,14 +217,7 @@ function sendPet(runtime, payload) {
 
 // ——— Harness events ————————————————————————————————————————————————————
 
-function wireAgentEvents(ctx, runtime, profile) {
-  const sessions = () => {
-    try {
-      return ctx.get('sessions', false)
-    } catch {
-      return undefined
-    }
-  }
+function wireAgentEvents(ctx, runtime) {
   const titles = () => {
     try {
       return ctx.get('sessionTitle', false)
@@ -231,93 +225,83 @@ function wireAgentEvents(ctx, runtime, profile) {
       return undefined
     }
   }
-  const isRootAgent = (agent) => {
-    try {
-      const session = sessions()?.get(agent.id)
-      return session === undefined || session?.header?.parentSession === undefined
-    } catch {
-      return true
-    }
-  }
-  const stateOf = (agentId) => {
-    let state = runtime.agents.get(agentId)
+  const stateOf = (sessionId) => {
+    let state = runtime.agents.get(sessionId)
     if (state === undefined) {
       state = { running: false, waiting: 0, text: '', title: '', touched: 0 }
-      runtime.agents.set(agentId, state)
+      runtime.agents.set(sessionId, state)
     }
     return state
   }
-  const titleOf = (agentId) => {
+  const titleOf = (session) => {
     try {
-      const session = sessions()?.get(agentId)
-      if (session === undefined) return ''
       return titles()?.get(session)?.title ?? ''
     } catch {
       return ''
     }
   }
 
-  ctx.on('agent/status', (payload) => {
-    const agent = payload?.agent
-    if (!agent || !isRootAgent(agent)) return
-    const state = stateOf(agent.id)
+  // `session/event` is the one global, durable feed: the agent-scoped events
+  // (agent/status, agent/assistant-stream, approval/request) are filtered to
+  // their own scope and never reach a root listener.
+  ctx.on('session/event', (session, event) => {
+    if (session === undefined || session === null || event === undefined) return
+    const header = session.header
+    if (header?.parentSession !== undefined) return // subagents stay out of the bubble
+    const state = stateOf(session.id)
     state.touched = Date.now()
-    state.title = titleOf(agent.id) || state.title
-    state.running = payload.status === 'running'
-    if (state.running) {
-      runtime.doneText = null
-      state.waiting = 0
-    } else if (state.text !== '' || state.title !== '') {
-      // A finished turn leaves the completion bubble up until the next turn.
-      runtime.doneText = `“${state.title || '会话'}”已完成`
-      runtime.doneAt = Date.now()
+    const title = titleOf(session)
+    if (title !== '') state.title = title
+
+    switch (event.type) {
+      case 'turn/start':
+        state.running = true
+        state.waiting = 0
+        runtime.doneText = null
+        break
+      case 'turn/end': {
+        state.running = false
+        state.waiting = 0
+        const kind = event.data?.reason?.kind
+        if (kind === 'completed') {
+          runtime.doneText = `“${state.title || '会话'}”已完成`
+          runtime.doneAt = Date.now()
+        }
+        break
+      }
+      case 'step/start':
+      case 'tool/call':
+        state.running = true
+        if (event.type === 'tool/call' && event.data?.name === 'ask_user_question') state.waiting += 1
+        break
+      case 'tool/result':
+        state.waiting = Math.max(0, state.waiting - 1)
+        break
+      case 'approval/asked':
+        state.waiting += 1
+        break
+      case 'approval/decided':
+        state.waiting = Math.max(0, state.waiting - 1)
+        break
+      case 'assistant/message': {
+        state.running = true
+        const text = assistantText(event.data)
+        if (text !== '') state.text = text
+        break
+      }
     }
   })
 
-  ctx.on('agent/assistant-stream', (payload) => {
-    const agent = payload?.agent
-    const frame = payload?.frame
-    if (!agent || !isRootAgent(agent) || frame?.type !== 'chunk') return
-    if (frame.chunk?.type !== 'text-delta') return
-    const state = stateOf(agent.id)
-    state.touched = Date.now()
-    state.text = (state.text + frame.chunk.text).slice(-400)
-  })
-
-  const trackWaiting = (agentId) => {
-    const state = stateOf(agentId)
-    state.touched = Date.now()
-    state.waiting += 1
-    return () => {
-      state.waiting = Math.max(0, state.waiting - 1)
-    }
-  }
-
-  ctx.on('approval/request', async (req, next) => {
-    const done = req?.agent ? trackWaiting(req.agent.id) : () => {}
-    try {
-      return await next()
-    } finally {
-      done()
-    }
-  })
-
-  ctx.on('user-questions/request', async (request, next) => {
-    const done = request?.agent ? trackWaiting(request.agent.id) : () => {}
-    try {
-      return await next()
-    } finally {
-      done()
-    }
-  })
-
-  // Keep titles fresh: they are generated asynchronously after the first prompt.
+  // Titles are generated asynchronously after the first prompt.
   ctx.effect(
     () => {
       const id = setInterval(() => {
-        for (const [agentId, state] of runtime.agents) {
-          const title = titleOf(agentId)
-          if (title !== '' && title !== state.title) state.title = title
+        for (const state of runtime.agents.values()) {
+          if (state.title !== '') continue
+          for (const session of liveSessions(ctx)) {
+            const title = titleOf(session)
+            if (title !== '') state.title = title
+          }
         }
       }, 5000)
       id.unref?.()
@@ -325,6 +309,34 @@ function wireAgentEvents(ctx, runtime, profile) {
     },
     'dsh-lite-pet: title refresh',
   )
+}
+
+function liveSessions(ctx) {
+  try {
+    const sessions = ctx.get('sessions', false)
+    return sessions === undefined ? [] : sessions.list()
+  } catch {
+    return []
+  }
+}
+
+/** Last text block of the newest assistant message, flattened for the bubble. */
+function assistantText(data) {
+  const message = data?.message
+  const blocks = Array.isArray(message?.content) ? message.content : []
+  let last = ''
+  for (const block of blocks) {
+    if (block?.type === 'text' && typeof block.text === 'string') last = block.text
+  }
+  if (last !== '') return last.slice(-400)
+  const records = Array.isArray(data?.stream) ? data.stream : []
+  for (let index = records.length - 1; index >= 0; index--) {
+    const record = records[index]
+    if (record?.type === 'text-chunks' && Array.isArray(record.texts) && record.texts.length > 0) {
+      return record.texts.join('').slice(-400)
+    }
+  }
+  return ''
 }
 
 // ——— state push ————————————————————————————————————————————————————————
@@ -556,3 +568,9 @@ function stopPet(runtime) {
   }, 1500)
   timer.unref?.()
 }
+
+
+
+
+
+
