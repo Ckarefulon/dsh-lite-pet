@@ -1,4 +1,4 @@
-// Native popup menu: 动作 ▸ (category ▸ animation), 查余额, 关闭桌宠.
+﻿// Native popup menu: 动作 ▸ (category ▸ animation), 调整大小 ▸ presets, 查余额, 关闭桌宠.
 using System;
 using System.Collections.Generic;
 
@@ -8,19 +8,26 @@ namespace DshLitePet
     {
         public const int CommandBalance = 1;
         public const int CommandQuit = 2;
+        private const int ScaleBase = 10;
         private const int AnimationBase = 100;
 
+        /// <summary>Window scales offered by 调整大小, in menu order.</summary>
+        public static readonly double[] Scales = { 0.75, 1.0, 1.25, 1.5 };
+        private static readonly string[] ScaleLabels = { "小", "标准", "大", "特大" };
+
         private readonly Catalog _catalog;
+        private readonly Dictionary<int, CatalogEntry> _commands = new Dictionary<int, CatalogEntry>();
 
         public PetMenu(Catalog catalog)
         {
             _catalog = catalog;
         }
 
-        /// <summary>Shows the menu and returns the chosen CatalogEntry (when an animation was picked) plus a command.</summary>
-        public int Show(IntPtr hwnd, out CatalogEntry chosen)
+        /// <summary>Shows the menu. Returns the chosen command and, for 调整大小, the requested scale.</summary>
+        public int Show(IntPtr hwnd, double currentScale, out CatalogEntry chosen, out double chosenScale)
         {
             chosen = null;
+            chosenScale = 0;
             IntPtr root = Native.CreatePopupMenu();
             var groups = new List<IntPtr>();
             try
@@ -35,33 +42,46 @@ namespace DshLitePet
                     foreach (CatalogEntry entry in _catalog.ByGroup(group))
                     {
                         Native.AppendMenu(sub, Native.MF_STRING, (UIntPtr)(AnimationBase + index), entry.Name);
-                        _commandMap[AnimationBase + index] = entry;
+                        _commands[AnimationBase + index] = entry;
                         index++;
                     }
                     Native.AppendMenu(actions, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)sub.ToInt64()), group);
                 }
                 Native.AppendMenu(root, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)actions.ToInt64()), "动作");
+
+                IntPtr sizes = Native.CreatePopupMenu();
+                groups.Add(sizes);
+                for (int i = 0; i < Scales.Length; i++)
+                {
+                    uint flags = Native.MF_STRING;
+                    if (Math.Abs(Scales[i] - currentScale) < 0.01) flags |= Native.MF_CHECKED;
+                    Native.AppendMenu(sizes, flags, (UIntPtr)(ScaleBase + i), ScaleLabels[i]);
+                }
+                Native.AppendMenu(root, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)sizes.ToInt64()), "调整大小");
+
                 Native.AppendMenu(root, Native.MF_SEPARATOR, UIntPtr.Zero, null);
+                Native.AppendMenu(root, Native.MF_STRING | Native.MF_DISABLED, UIntPtr.Zero, "按住宠物可拖动位置，按住气泡上下拖动可调气泡距离");
                 Native.AppendMenu(root, Native.MF_STRING, (UIntPtr)CommandBalance, "查余额");
                 Native.AppendMenu(root, Native.MF_STRING, (UIntPtr)CommandQuit, "关闭桌宠");
 
-                Native.POINT pt;
-                Native.GetCursorPos(out pt);
+                Native.POINT point;
+                Native.GetCursorPos(out point);
                 Native.SetForegroundWindow(hwnd);
-                int command = Native.TrackPopupMenuEx(root, Native.TPM_RIGHTBUTTON | Native.TPM_RETURNCMD | Native.TPM_NONOTIFY,
-                    pt.X, pt.Y, hwnd, IntPtr.Zero);
-                if (command >= AnimationBase && _commandMap.ContainsKey(command))
-                    chosen = _commandMap[command];
+                int command = Native.TrackPopupMenuEx(
+                    root,
+                    Native.TPM_RIGHTBUTTON | Native.TPM_RETURNCMD | Native.TPM_NONOTIFY,
+                    point.X, point.Y, hwnd, IntPtr.Zero);
+
+                if (command >= AnimationBase && _commands.ContainsKey(command)) chosen = _commands[command];
+                if (command >= ScaleBase && command < ScaleBase + Scales.Length) chosenScale = Scales[command - ScaleBase];
                 return command;
             }
             finally
             {
                 Native.DestroyMenu(root);
-                _commandMap.Clear();
+                _commands.Clear();
             }
         }
-
-        private readonly Dictionary<int, CatalogEntry> _commandMap = new Dictionary<int, CatalogEntry>();
     }
 }
 

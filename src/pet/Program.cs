@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -14,10 +16,11 @@ namespace DshLitePet
         private const int TimerId = 1;
         private const int TimerPeriodMs = 12;
         private const int WindowMargin = 24;
+        private const int DragThreshold = 3;
         private const string WindowClass = "DshLitePetWindow";
 
-
         private static Catalog _catalog;
+        private static PetSettings _settings;
         private static PetCanvas _canvas;
         private static Native.LayeredSurface _surface;
         private static PetMenu _menu;
@@ -39,8 +42,22 @@ namespace DshLitePet
         private static long _bubbleHideAt = -1;
         private static long _nextActionAt;
         private static string _currentKind = "";
+        private static double _scale = 1.0;
         private static int _windowX;
         private static int _windowY;
+        private static int _windowWidth;
+        private static int _windowHeight;
+        private static Bitmap _frameBitmap;
+        private static Bitmap _scaledBitmap;
+
+        private static bool _dragging;
+        private static bool _dragPet;
+        private static bool _dragMoved;
+        private static int _dragStartX;
+        private static int _dragStartY;
+        private static int _dragStartOffset;
+        private static int _dragStartWindowX;
+        private static int _dragStartWindowY;
 
         private static void Main(string[] args)
         {
@@ -57,9 +74,11 @@ namespace DshLitePet
             Mf.Start();
             try
             {
+                _settings = PetSettings.Load();
+                _scale = _settings.Scale;
                 _catalog = Catalog.Load(mediaDir);
                 _canvas = new PetCanvas(_catalog.Width, _catalog.Height);
-                _surface = new Native.LayeredSurface(_canvas.Width, _canvas.Height);
+                _canvas.BubbleOffsetY = _settings.BubbleOffsetY;
                 _menu = new PetMenu(_catalog);
                 _ipc = new Ipc();
                 _ipc.Start();
@@ -76,6 +95,8 @@ namespace DshLitePet
             {
                 if (_clip != null) _clip.Dispose();
                 if (_surface != null) _surface.Dispose();
+                if (_frameBitmap != null) _frameBitmap.Dispose();
+                if (_scaledBitmap != null) _scaledBitmap.Dispose();
                 if (_canvas != null) _canvas.Dispose();
                 if (_ipc != null) _ipc.Dispose();
                 Mf.Stop();
@@ -84,6 +105,8 @@ namespace DshLitePet
 
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
+
+        // ——— window ————————————————————————————————————————————————
 
         private static void CreateWindow()
         {
@@ -99,19 +122,80 @@ namespace DshLitePet
             };
             Native.RegisterClassEx(ref wc);
 
+            MeasureWindow();
             Native.RECT work = new Native.RECT();
             Native.SystemParametersInfo(Native.SPI_GETWORKAREA, 0, ref work, 0);
-            _windowX = work.Right - _canvas.Width - WindowMargin;
-            _windowY = work.Bottom - _canvas.Height - WindowMargin;
+            if (_settings.WindowX != int.MinValue && _settings.WindowY != int.MinValue)
+            {
+                _windowX = _settings.WindowX;
+                _windowY = _settings.WindowY;
+            }
+            else
+            {
+                _windowX = work.Right - _windowWidth - WindowMargin;
+                _windowY = work.Bottom - _windowHeight - WindowMargin;
+            }
+            ClampToWorkArea(work);
 
             _hwnd = Native.CreateWindowEx(
                 Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOPMOST,
                 WindowClass, "dsh-lite-pet", Native.WS_POPUP,
-                _windowX, _windowY, _canvas.Width, _canvas.Height,
+                _windowX, _windowY, _windowWidth, _windowHeight,
                 IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
             if (_hwnd == IntPtr.Zero) throw new InvalidOperationException("CreateWindowEx failed: " + Marshal.GetLastWin32Error());
             Native.ShowWindow(_hwnd, Native.SW_SHOWNOACTIVATE);
             Native.SetWindowPos(_hwnd, (IntPtr)(-1), 0, 0, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
+        }
+
+        /// <summary>Keeps at least a sliver of the window inside the work area (a saved position can go stale).</summary>
+        private static void ClampToWorkArea(Native.RECT work)
+        {
+            int minVisible = 60;
+            if (_windowX + _windowWidth < work.Left + minVisible) _windowX = work.Left;
+            if (_windowX > work.Right - minVisible) _windowX = work.Right - minVisible;
+            if (_windowY + _windowHeight < work.Top + minVisible) _windowY = work.Top;
+            if (_windowY > work.Bottom - minVisible) _windowY = work.Bottom - minVisible;
+        }
+
+        /// <summary>Sizes the window, the DIB and the scaling intermediates for the current scale.</summary>
+        private static void MeasureWindow()
+        {
+            _windowWidth = (int)Math.Round(_canvas.Width * _scale);
+            _windowHeight = (int)Math.Round(_canvas.Height * _scale);
+            if (_surface != null) _surface.Dispose();
+            _surface = new Native.LayeredSurface(_windowWidth, _windowHeight);
+            if (_scaledBitmap != null) _scaledBitmap.Dispose();
+            if (_frameBitmap != null) _frameBitmap.Dispose();
+            _frameBitmap = null;
+            _scaledBitmap = null;
+            if (_scale != 1.0)
+            {
+                _frameBitmap = new Bitmap(_canvas.Width, _canvas.Height, PixelFormat.Format32bppPArgb);
+                _scaledBitmap = new Bitmap(_windowWidth, _windowHeight, PixelFormat.Format32bppPArgb);
+            }
+        }
+
+        private static void ApplyScale(double scale)
+        {
+            if (Math.Abs(scale - _scale) < 0.001) return;
+            _scale = scale;
+            _settings.Scale = scale;
+            int oldWidth = _windowWidth;
+            int oldHeight = _windowHeight;
+            MeasureWindow();
+            // Keep the bottom-right corner (where the pet's feet are) in place.
+            _windowX += oldWidth - _windowWidth;
+            _windowY += oldHeight - _windowHeight;
+            Native.RECT work = new Native.RECT();
+            Native.SystemParametersInfo(Native.SPI_GETWORKAREA, 0, ref work, 0);
+            ClampToWorkArea(work);
+            _settings.WindowX = _windowX;
+            _settings.WindowY = _windowY;
+            _settings.Save();
+            Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, _windowWidth, _windowHeight,
+                Native.SWP_NOACTIVATE);
+            _bubbleDirty = true;
+            Present();
         }
 
         private static void RunLoop()
@@ -125,6 +209,8 @@ namespace DshLitePet
             }
         }
 
+        // ——— messages ————————————————————————————————————————————————
+
         private static IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
         {
             switch (msg)
@@ -134,8 +220,14 @@ namespace DshLitePet
                     return IntPtr.Zero;
                 case Native.WM_NCHITTEST:
                     return (IntPtr)HitTest(lParam);
+                case Native.WM_LBUTTONDOWN:
+                    OnLeftDown(lParam);
+                    return IntPtr.Zero;
+                case Native.WM_MOUSEMOVE:
+                    OnMouseMove(lParam);
+                    return IntPtr.Zero;
                 case Native.WM_LBUTTONUP:
-                    _ipc.Send("{\"t\":\"open\"}");
+                    OnLeftUp(lParam);
                     return IntPtr.Zero;
                 case Native.WM_RBUTTONUP:
                     OpenMenu();
@@ -155,15 +247,108 @@ namespace DshLitePet
             int screenY = unchecked((short)(((long)lParam >> 16) & 0xFFFF));
             var local = new Native.POINT { X = screenX, Y = screenY };
             Native.ScreenToClient(_hwnd, ref local);
-            return _canvas != null && _canvas.HitTest(local.X, local.Y) ? Native.HTCLIENT : Native.HTTRANSPARENT;
+            int x = (int)Math.Round(local.X / _scale);
+            int y = (int)Math.Round(local.Y / _scale);
+            return _canvas != null && _canvas.HitTest(x, y) ? Native.HTCLIENT : Native.HTTRANSPARENT;
+        }
+
+        private static void OnLeftDown(IntPtr lParam)
+        {
+            int x = unchecked((short)((long)lParam & 0xFFFF));
+            int y = unchecked((short)(((long)lParam >> 16) & 0xFFFF));
+            int localX = (int)Math.Round(x / _scale);
+            int localY = (int)Math.Round(y / _scale);
+            Native.POINT cursor;
+            Native.GetCursorPos(out cursor);
+            if (_canvas.HitTestBubble(localX, localY))
+            {
+                _dragging = true;
+                _dragPet = false;
+                _dragMoved = false;
+                _dragStartY = cursor.Y;
+                _dragStartOffset = _canvas.BubbleOffsetY;
+                Native.SetCapture(_hwnd);
+                return;
+            }
+            if (_canvas.HitTest(localX, localY))
+            {
+                _dragging = true;
+                _dragPet = true;
+                _dragMoved = false;
+                _dragStartX = cursor.X;
+                _dragStartY = cursor.Y;
+                _dragStartWindowX = _windowX;
+                _dragStartWindowY = _windowY;
+                Native.SetCapture(_hwnd);
+            }
+        }
+
+        private static void OnMouseMove(IntPtr lParam)
+        {
+            if (!_dragging) return;
+            Native.POINT cursor;
+            Native.GetCursorPos(out cursor);
+            if (_dragPet)
+            {
+                int dx = cursor.X - _dragStartX;
+                int dy = cursor.Y - _dragStartY;
+                if (Math.Abs(dx) >= DragThreshold || Math.Abs(dy) >= DragThreshold) _dragMoved = true;
+                if (!_dragMoved) return;
+                _windowX = _dragStartWindowX + dx;
+                _windowY = _dragStartWindowY + dy;
+                Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, 0, 0,
+                    Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+                return;
+            }
+            int delta = (int)Math.Round((cursor.Y - _dragStartY) / _scale);
+            if (Math.Abs(delta) >= DragThreshold) _dragMoved = true;
+            int offset = _dragStartOffset + delta;
+            int min = -(PetCanvas.BubbleArea - 12);
+            int max = PetCanvas.BubbleOverlapLimit;
+            if (offset < min) offset = min;
+            if (offset > max) offset = max;
+            if (offset == _canvas.BubbleOffsetY) return;
+            _canvas.BubbleOffsetY = offset;
+            _bubbleDirty = true;
+            Present();
+        }
+
+        private static void OnLeftUp(IntPtr lParam)
+        {
+            if (_dragging)
+            {
+                _dragging = false;
+                Native.ReleaseCapture();
+                if (_dragMoved)
+                {
+                    if (_dragPet)
+                    {
+                        _settings.WindowX = _windowX;
+                        _settings.WindowY = _windowY;
+                    }
+                    else
+                    {
+                        _settings.BubbleOffsetY = _canvas.BubbleOffsetY;
+                    }
+                    _settings.Save();
+                    return;
+                }
+            }
+            int x = unchecked((short)((long)lParam & 0xFFFF));
+            int y = unchecked((short)(((long)lParam >> 16) & 0xFFFF));
+            int localX = (int)Math.Round(x / _scale);
+            int localY = (int)Math.Round(y / _scale);
+            if (_canvas.HitTest(localX, localY)) _ipc.Send("{\"t\":\"open\"}");
         }
 
         private static void OpenMenu()
         {
             CatalogEntry chosen;
-            int command = _menu.Show(_hwnd, out chosen);
+            double chosenScale;
+            int command = _menu.Show(_hwnd, _scale, out chosen, out chosenScale);
             if (command == PetMenu.CommandQuit) { Quit(); return; }
             if (command == PetMenu.CommandBalance) { _ipc.Send("{\"t\":\"balance\"}"); return; }
+            if (chosenScale > 0) { ApplyScale(chosenScale); return; }
             if (chosen != null) PlayClip(chosen, false);
         }
 
@@ -172,6 +357,8 @@ namespace DshLitePet
             _ipc.Send("{\"t\":\"closed\"}");
             Native.DestroyWindow(_hwnd);
         }
+
+        // ——— rendering ————————————————————————————————————————————
 
         private static void Tick()
         {
@@ -197,7 +384,6 @@ namespace DshLitePet
                     return;
                 }
                 _frameIndex++;
-                _canvas.ComposePet(_clip.Color, _clip.Alpha, _clip.Width, _clip.Height);
                 Present();
             }
             else if (_bubbleDirty)
@@ -208,10 +394,52 @@ namespace DshLitePet
 
         private static void Present()
         {
+            // Recompose from the last decoded frame every time: a bubble-only repaint
+            // must not leave the previous bubble behind.
+            if (_clip != null)
+                _canvas.ComposePet(_clip.Color, _clip.Alpha, _clip.Width, _clip.Height);
             _canvas.DrawBubble(_bubbleText, _bubbleDot);
             _bubbleDirty = false;
-            _surface.Upload(_canvas.Pixels);
+            if (_scale == 1.0)
+            {
+                _surface.Upload(_canvas.Pixels);
+            }
+            else
+            {
+                UploadScaled();
+            }
             _surface.Present(_hwnd, _windowX, _windowY);
+        }
+
+        private static void UploadScaled()
+        {
+            BitmapData frame = _frameBitmap.LockBits(
+                new Rectangle(0, 0, _canvas.Width, _canvas.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
+            try
+            {
+                for (int y = 0; y < _canvas.Height; y++)
+                    Marshal.Copy(_canvas.Pixels, y * _canvas.Width * 4, frame.Scan0 + y * frame.Stride, _canvas.Width * 4);
+            }
+            finally
+            {
+                _frameBitmap.UnlockBits(frame);
+            }
+            using (Graphics g = Graphics.FromImage(_scaledBitmap))
+            {
+                g.InterpolationMode = InterpolationMode.Bilinear;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.DrawImage(_frameBitmap, new Rectangle(0, 0, _windowWidth, _windowHeight));
+            }
+            BitmapData scaled = _scaledBitmap.LockBits(
+                new Rectangle(0, 0, _windowWidth, _windowHeight), ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+            try
+            {
+                _surface.UploadRows(scaled.Scan0, scaled.Stride, _windowWidth * 4, _windowHeight);
+            }
+            finally
+            {
+                _scaledBitmap.UnlockBits(scaled);
+            }
         }
 
         private static void SetBubble(string text, BubbleDot dot)
@@ -221,6 +449,8 @@ namespace DshLitePet
             _bubbleDot = dot;
             _bubbleDirty = true;
         }
+
+        // ——— playback state ————————————————————————————————————————
 
         private static void OnClipEnd(long now)
         {
@@ -360,6 +590,3 @@ namespace DshLitePet
         }
     }
 }
-
-
-
