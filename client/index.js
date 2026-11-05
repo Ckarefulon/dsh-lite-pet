@@ -1,4 +1,4 @@
-// dsh-lite-pet — browser half. Adds exactly one switch row to 设置 → 通用; the
+﻿// dsh-lite-pet — browser half. Adds exactly one switch row to 设置 → 通用; the
 // row drives the Host's `/api/dsh-lite-pet` endpoints, nothing else is registered.
 window.__ModuleLoader__.load({
   id: 'dsh-lite-pet',
@@ -33,8 +33,7 @@ window.__ModuleLoader__.load({
       return body
     }
 
-    function Row(props) {
-      const ctx = props.ctx
+    function Row() {
       const [state, setState] = useState(null)
       const [busy, setBusy] = useState(false)
       const [error, setError] = useState(null)
@@ -85,8 +84,6 @@ window.__ModuleLoader__.load({
       const supported = state === null ? true : state.supported !== false
       const enabled = state !== null && state.enabled === true
       const status = state === null ? '' : supported ? (enabled ? TEXT.on : TEXT.off) : TEXT.unsupported
-
-      void ctx
 
       return h(
         'div',
@@ -175,7 +172,6 @@ window.__ModuleLoader__.load({
             id: 'dsh-lite-pet',
             // After performance-usage (30), before current-version (100); the tailscale row sits at 95.
             order: 96,
-            inject: () => ({ ctx }),
           },
           Row,
         ),
@@ -188,3 +184,5 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+
+
