@@ -1,0 +1,5 @@
+# dsh-lite-pet bundle layer: one Host row. The browser half rides along through
+# package.json's `dsh.client` declaration, so nothing else is inserted here.
+- insert:
+    - id: dsh-lite-pet
+      name: dsh-lite-pet

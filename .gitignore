@@ -1,0 +1,5 @@
+node_modules/
+runtime/media/
+runtime/pet/
+*.log
+.DS_Store
