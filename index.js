@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-lite-pet — Host half.
  *
  * Spawns the native desktop-pet process (Windows) and keeps it in sync with the
@@ -568,6 +568,7 @@ function stopPet(runtime) {
   }, 1500)
   timer.unref?.()
 }
+
 
 
 
