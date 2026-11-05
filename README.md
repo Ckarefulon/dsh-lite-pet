@@ -1,4 +1,4 @@
-# dsh-lite-pet
+﻿# dsh-lite-pet
 
 轻量的 **DSH 系统级桌面桌宠**。不套 Electron、不嵌 Chromium：桌宠是一个约 1 MB 的原生 Windows 进程（系统自带 .NET Framework 4.8 + Media Foundation 解码），盯着 DSH 的会话事件在桌面上动画。
 
@@ -7,12 +7,13 @@
 ## 功能
 
 - **点击桌宠或气泡** 打开 / 聚焦 DSH 窗口。
-- **右键菜单**：动作（按分类换动画）/ 查余额 / 关闭桌宠。
+- **右键菜单**：动作（按分类换动画）/ 调整大小（小·标准·大·特大）/ 查余额 / 关闭桌宠（会记住关闭状态）。
 - **自动播放**：待机之外随机播放素材库里的非工作动画（点击回应、碎碎念、余额、季节小动作……共 90+ 段）。
 - **工作状态动画**：思考 / 忙碌 / 等待确认 / 完成 各自对应动画。
 - **气泡**：仅工作时显示 Agent 最新一段正文；**等待回答或批准**时最左侧亮黄色圆点；回合结束显示「“会话名”已完成」+ 绿色圆点，不自动消失，直到下一次工作。
 - **查余额**：气泡显示「余额 ¥x（赠金 ¥y）」并播放对应余额动画。
-- **逐像素透明 + 点击穿透**：透明像素、以及宠物实体边缘内侧 4 px 的环形区域都不吃点击，直接落到下层窗口。
+- **拖拽**：按住宠物移动位置，按住气泡上下拖动调气泡距离，都会记住。
+- **逐像素透明 + 点击穿透**：透明像素、以及宠物实体边缘内侧 6 px 的环形区域都不吃点击，直接落到下层窗口。
 - **程序内只有一个开关**：设置 → 通用 → 桌面桌宠。
 
 ## 环境要求
@@ -58,10 +59,12 @@ npm run test:pet      # 冒烟：启动 → ready → 切状态 → quit（需�
 
 ## 发布
 
-- 打 `v*` tag 触发 `.github/workflows/publish.yml`：装 ffmpeg → 转码 → 编译 → `npm publish --provenance`，并创建 GitHub Release。
-- 需要在仓库 Secrets 里配置 `NPM_TOKEN`（granular token，具备 publish 权限）。
+- 打 `v*` tag（或手动触发）运行 `.github/workflows/publish.yml`：装 ffmpeg → 转码 → 编译 → `npm publish` → 创建 GitHub Release。
+- 发布走 **npm Trusted Publishing（OIDC）**，仓库里不需要任何 token secret。需要在 npmjs.com 上给 `dsh-lite-pet` 配置 Trusted Publisher：仓库 `Ckarefulon/dsh-lite-pet`、工作流文件 `publish.yml`。
 - `.github/workflows/sync-assets.yml` 每天 `git subtree pull` 上游素材，有变更即提交并推送。
 
 ## 许可
 
 MIT。动画素材来自上游仓库，版权与署名见 [上游仓库](https://github.com/PC2005-cloud/dsh-pet)。
+
+

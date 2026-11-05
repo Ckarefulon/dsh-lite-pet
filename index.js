@@ -135,14 +135,13 @@ function createRuntime() {
 }
 
 function ensurePet(ctx, runtime, profile) {
-  if (runtime.disposing || runtime.pet) return
+  if (runtime.disposing || runtime.pet || !runtime.enabled) return
   if (!existsSync(PET_EXE) || !existsSync(MEDIA_DIR)) {
     ctx.logger?.warn?.('[dsh-lite-pet] runtime/pet or runtime/media is missing; run `npm run build` first')
     return
   }
   const child = spawn(PET_EXE, ['--media', MEDIA_DIR], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   runtime.pet = child
-  runtime.enabled = true
   runtime.ready = false
   child.stdout?.setEncoding('utf8')
   child.stderr?.setEncoding('utf8')
@@ -150,7 +149,10 @@ function ensurePet(ctx, runtime, profile) {
     for (const line of String(chunk).split(/\r?\n/)) {
       if (line.trim() === '') continue
       try {
-        handlePetLine(ctx, runtime, profile, JSON.parse(line))
+        const message = JSON.parse(line)
+        // A late line from a pet we already replaced must not steer the new one.
+        if (message?.t === 'closed' && runtime.pet !== child) continue
+        handlePetLine(ctx, runtime, profile, message)
       } catch {
         /* a malformed line must never take the Host down */
       }
@@ -195,6 +197,15 @@ function handlePetLine(ctx, runtime, profile, message) {
   }
   if (message?.t === 'closed') {
     runtime.pet = null
+    if (runtime.disposing) return
+    // 右键菜单「关闭桌宠」是用户的明确选择：记住它，不要让它自己再启动。
+    runtime.enabled = false
+    profile.enabled = false
+    try {
+      writeEnabled(profile.settings, false)
+    } catch {
+      /* best effort */
+    }
   }
 }
 
@@ -312,6 +323,23 @@ function liveSessions(ctx) {
   } catch {
     return []
   }
+}
+
+/** Last assistant text already committed for this session (so the bubble has real copy at turn start). */
+function recentAssistantText(session) {
+  try {
+    const events = session.snapshotEvents()
+    const from = Math.max(0, events.length - 400)
+    for (let index = events.length - 1; index >= from; index--) {
+      const event = events[index]
+      if (event?.type !== 'assistant/message') continue
+      const text = assistantText(event.data)
+      if (text !== '') return text
+    }
+  } catch {
+    /* a session without a readable log just gets the fallback text */
+  }
+  return ''
 }
 
 /** Last text block of the newest assistant message, flattened for the bubble. */
@@ -562,6 +590,7 @@ function stopPet(runtime) {
   }, 1500)
   timer.unref?.()
 }
+
 
 
 

@@ -1,4 +1,4 @@
-// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble
+﻿// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble
 // (which can be dragged vertically, so it is composited over the pet instead of living in a fixed strip).
 using System;
 using System.Drawing;
@@ -16,7 +16,7 @@ namespace DshLitePet
         public const int BubbleMargin = 10;
         public const int DotSize = 8;
         public const int CornerRadius = 11;
-        public const int HitErosion = 4;
+        public const int HitErosion = 6;
         public const int BubbleOverlapLimit = 72;
 
         public readonly int Width;
@@ -282,3 +282,4 @@ namespace DshLitePet
         Done = 2,
     }
 }
+

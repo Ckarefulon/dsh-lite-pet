@@ -1,4 +1,4 @@
-// dsh-lite-pet desktop helper: one layered, click-through window that plays
+﻿// dsh-lite-pet desktop helper: one layered, click-through window that plays
 // H.264 color + alpha tracks through Media Foundation and draws its own bubble.
 using System;
 using System.Collections.Generic;
@@ -53,6 +53,7 @@ namespace DshLitePet
         private static bool _dragging;
         private static bool _dragPet;
         private static bool _dragMoved;
+        private static long _lastHitCheck;
         private static int _dragStartX;
         private static int _dragStartY;
         private static int _dragStartOffset;
@@ -252,6 +253,42 @@ namespace DshLitePet
             return _canvas != null && _canvas.HitTest(x, y) ? Native.HTCLIENT : Native.HTTRANSPARENT;
         }
 
+        /// <summary>
+        /// Windows treats every pixel with alpha &gt; 0 as solid for a layered window, so
+        /// WM_NCHITTEST alone cannot open the eroded band. Poll the cursor and drop
+        /// WS_EX_TRANSPARENT on the pet / add it everywhere else.
+        /// </summary>
+        private static void UpdateHitState()
+        {
+            if (_canvas == null || _hwnd == IntPtr.Zero) return;
+            if (_dragging)
+            {
+                // Self-heal a lost WM_LBUTTONUP (the button is physically up again).
+                if ((Native.GetAsyncKeyState(0x01) & 0x8000) == 0)
+                {
+                    _dragging = false;
+                    Native.ReleaseCapture();
+                }
+                return;
+            }
+            long now = Uptime.ElapsedMilliseconds;
+            if (now - _lastHitCheck < 30) return;
+            _lastHitCheck = now;
+            Native.POINT cursor;
+            if (!Native.GetCursorPos(out cursor)) return;
+            var local = new Native.POINT { X = cursor.X, Y = cursor.Y };
+            Native.ScreenToClient(_hwnd, ref local);
+            int x = (int)Math.Round(local.X / _scale);
+            int y = (int)Math.Round(local.Y / _scale);
+            bool hit = _canvas.HitTest(x, y);
+            // The window's real style is the source of truth; a cached flag can drift.
+            int style = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
+            bool transparent = (style & Native.WS_EX_TRANSPARENT) != 0;
+            if (hit != transparent) return;
+            int next = hit ? (style & ~Native.WS_EX_TRANSPARENT) : (style | Native.WS_EX_TRANSPARENT);
+            Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE, next);
+        }
+
         private static void OnLeftDown(IntPtr lParam)
         {
             int x = unchecked((short)((long)lParam & 0xFFFF));
@@ -367,6 +404,8 @@ namespace DshLitePet
             string line;
             while (_ipc.TryRead(out line)) HandleCommand(line);
 
+            UpdateHitState();
+
             long now = Uptime.ElapsedMilliseconds;
             if (_bubbleHideAt >= 0 && now >= _bubbleHideAt)
             {
@@ -426,6 +465,10 @@ namespace DshLitePet
             }
             using (Graphics g = Graphics.FromImage(_scaledBitmap))
             {
+                // SourceCopy replaces the destination pixels (alpha included). Without this
+                // each scaled frame would be blended over the previous one and the animation
+                // would trail.
+                g.CompositingMode = CompositingMode.SourceCopy;
                 g.InterpolationMode = InterpolationMode.Bilinear;
                 g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 g.DrawImage(_frameBitmap, new Rectangle(0, 0, _windowWidth, _windowHeight));
@@ -590,3 +633,5 @@ namespace DshLitePet
         }
     }
 }
+
+
