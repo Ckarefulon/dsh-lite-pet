@@ -1,4 +1,4 @@
-// Win32 interop for the desktop pet window. Only what the pet actually uses:
+﻿// Win32 interop for the desktop pet window. Only what the pet actually uses:
 // a layered popup window, GDI memory DC + DIB section, hit testing, and popup menus.
 using System;
 using System.Runtime.InteropServices;
@@ -25,6 +25,8 @@ namespace DshLitePet
         public const int WM_LBUTTONUP = 0x0202;
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_TIMER = 0x0113;
+        public const int WM_SETCURSOR = 0x0020;
+        public const int WM_CAPTURECHANGED = 0x0215;
         public const int WM_DESTROY = 0x0002;
 
         public const int HWND_TOPMOST = -1;
@@ -208,6 +210,9 @@ namespace DshLitePet
         [DllImport("user32.dll")]
         public static extern IntPtr LoadCursor(IntPtr instance, IntPtr cursorName);
 
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetCursor(IntPtr cursor);
+
         /// <summary>Creates a top-down 32bpp DIB and its memory DC. The bits are BGRA, premultiplied on present.</summary>
         public sealed class LayeredSurface : IDisposable
         {
@@ -269,4 +274,5 @@ namespace DshLitePet
         }
     }
 }
+
 
