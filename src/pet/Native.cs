@@ -11,6 +11,8 @@ namespace DshLitePet
         public const int WS_EX_LAYERED = 0x00080000;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_NOACTIVATE = 0x08000000;
+        public const int WS_EX_TRANSPARENT = 0x00000020;
+        public const int GWL_EXSTYLE = -20;
         public const int WS_EX_TOPMOST = 0x00000008;
         public const int ULW_ALPHA = 0x00000002;
         public const byte AC_SRC_ALPHA = 0x01;
@@ -139,6 +141,15 @@ namespace DshLitePet
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT pt);
 
+        [DllImport("user32.dll")]
+        public static extern short GetAsyncKeyState(int vKey);
+
+        [DllImport("user32.dll")]
+        public static extern int GetWindowLong(IntPtr hwnd, int index);
+
+        [DllImport("user32.dll")]
+        public static extern int SetWindowLong(IntPtr hwnd, int index, int value);
+
 
 
         [DllImport("user32.dll")]
@@ -258,3 +269,4 @@ namespace DshLitePet
         }
     }
 }
+
