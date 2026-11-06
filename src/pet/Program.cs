@@ -1,4 +1,4 @@
-﻿// dsh-lite-pet desktop helper: one layered, click-through window that plays
+// dsh-lite-pet desktop helper: one layered, click-through window that plays
 // H.264 color + alpha tracks through Media Foundation and draws its own bubble.
 using System;
 using System.Collections.Generic;
@@ -548,8 +548,24 @@ namespace DshLitePet
                 PlayKind("idle", true, 0);
                 return;
             }
-            _clip.Rewind();
+            // Reopen instead of seeking: SetCurrentPosition on a reader with video
+            // processing can leave ReadSample blocked, which froze the pet at the end
+            // of the first loop.
+            CatalogEntry entry = _clip.Entry;
+            _clip.Dispose();
+            _clip = null;
+            try
+            {
+                _clip = new AnimationClip(entry);
+            }
+            catch (Exception)
+            {
+                _clip = null;
+                return;
+            }
+            _currentKind = _clip.Entry.Kind;
             _frameIndex = 0;
+            _frameMs = _clip.Entry.Fps > 0 ? 1000.0 / _clip.Entry.Fps : 1000.0 / 24.0;
             FrameClock.Restart();
             if (_currentKind == "idle" && now >= _nextActionAt)
             {

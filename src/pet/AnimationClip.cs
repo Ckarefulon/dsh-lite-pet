@@ -30,11 +30,6 @@ namespace DshLitePet
             return Mf.Read(_reader, Frame, Width, Height, out stamp);
         }
 
-        public void Rewind()
-        {
-            Mf.Rewind(_reader);
-        }
-
         public void Dispose()
         {
             if (_reader != null) Marshal.ReleaseComObject(_reader);
@@ -42,4 +37,5 @@ namespace DshLitePet
         }
     }
 }
+
 

@@ -1,4 +1,4 @@
-// Minimal Media Foundation source-reader wrapper: decodes an H.264 file into
+﻿// Minimal Media Foundation source-reader wrapper: decodes an H.264 file into
 // straight BGRA rows (top-down, stride = width * 4) without any GDI+ object.
 using System;
 using System.Runtime.InteropServices;
@@ -259,11 +259,6 @@ namespace DshLitePet
             }
         }
 
-        public static void Rewind(IMFSourceReader reader)
-        {
-            Guid timeFormat = Guid.Empty;
-            long position = 0;
-            Check(reader.SetCurrentPosition(ref timeFormat, ref position), "SetCurrentPosition");
-        }
     }
 }
+
