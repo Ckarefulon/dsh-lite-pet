@@ -1,4 +1,4 @@
-// dsh-lite-pet desktop helper: one layered, click-through window that plays
+﻿// dsh-lite-pet desktop helper: one layered, click-through window that plays
 // H.264 color + alpha tracks through Media Foundation and draws its own bubble.
 using System;
 using System.Collections.Generic;
@@ -63,9 +63,7 @@ namespace DshLitePet
         private static IntPtr _handCursor;
         private static byte[] _fadeSnapshot;
         private static long _fadeStart = -1;
-        private static long _lastFrameAt;
         private const long FadeMs = 260;
-        private const long StallTimeoutMs = 2000;
 
         private static void Main(string[] args)
         {
@@ -449,14 +447,6 @@ namespace DshLitePet
 
             if (_clip == null) { PlayKind("idle", true, 0); return; }
 
-            // Watchdog: a decoder that stopped producing frames must not freeze the pet.
-            if (now - _lastFrameAt > StallTimeoutMs)
-            {
-                _lastFrameAt = now;
-                PlayKind("idle", true, 0, true);
-                return;
-            }
-
             if (FrameClock.Elapsed.TotalMilliseconds >= _frameIndex * _frameMs)
             {
                 if (!_clip.TryReadFrame())
@@ -465,7 +455,6 @@ namespace DshLitePet
                     return;
                 }
                 _frameIndex++;
-                _lastFrameAt = now;
                 Present();
             }
             else if (_bubbleDirty)
@@ -479,7 +468,7 @@ namespace DshLitePet
             // Recompose from the last decoded frame every time: a bubble-only repaint
             // must not leave the previous bubble behind.
             if (_clip != null)
-                _canvas.ComposePet(_clip.Color, _clip.Alpha, _clip.Width, _clip.Height);
+                _canvas.ComposePet(_clip.Frame, _clip.Width, _clip.BodyHeight);
             if (_fadeStart >= 0 && _fadeSnapshot != null)
             {
                 long elapsed = Uptime.ElapsedMilliseconds - _fadeStart;
@@ -691,12 +680,12 @@ namespace DshLitePet
             _oneShot = !loop;
             _frameIndex = 0;
             _bubbleDirty = true;
-            _lastFrameAt = Uptime.ElapsedMilliseconds;
             _frameMs = _clip.Entry.Fps > 0 ? 1000.0 / _clip.Entry.Fps : 1000.0 / 24.0;
             FrameClock.Restart();
         }
     }
 }
+
 
 
 

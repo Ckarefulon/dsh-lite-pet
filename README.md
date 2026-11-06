@@ -1,4 +1,4 @@
-﻿# dsh-lite-pet
+# dsh-lite-pet
 
 轻量的 **DSH 系统级桌面桌宠**。不套 Electron、不嵌 Chromium：桌宠是一个约 1 MB 的原生 Windows 进程（系统自带 .NET Framework 4.8 + Media Foundation 解码），盯着 DSH 的会话事件在桌面上动画。
 
@@ -38,7 +38,7 @@
 
 ### 为什么转码
 
-桌宠窗口是 layered window，必须逐像素 alpha。Windows 的 Media Foundation 不能解码 WebM/VP9 的 alpha 旁路流，所以构建时把每段动画转成**两路 H.264**：彩色轨 + 灰度 alpha 轨；运行时用 Source Reader 解出两帧后自行预乘合成。代价是构建依赖 ffmpeg，收益是运行时没有 Chromium。
+桌宠窗口是 layered window，必须逐像素 alpha，而 Media Foundation 不能解码 WebM/VP9 的 alpha 旁路流。构建时把每段动画压成**一个** H.264 文件：上半 640×360 是彩色，下半 640×360 是二值化后的遮罩带（`vstack` 拼接）。运行时只开**一个**解码器，一帧同时拿到彩色与遮罩，逐像素预乘后上屏——没有双解码、没有双文件。代价是构建依赖 ffmpeg，收益是运行时没有 Chromium。
 
 ### 资源占用（本机实测，1080p / 125% 缩放）
 

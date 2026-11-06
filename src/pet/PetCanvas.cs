@@ -58,11 +58,14 @@ namespace DshLitePet
 
         public Rectangle BubbleRect { get { return _bubbleRect; } }
 
-        public unsafe void ComposePet(byte[] color, byte[] alpha, int videoWidth, int videoHeight)
+        /// <summary>
+        /// Composes one decoded frame: color rows [0, bodyHeight) on top, the matching
+        /// grayscale alpha rows [bodyHeight, 2*bodyHeight) underneath.
+        /// </summary>
+        public unsafe void ComposePet(byte[] frame, int frameWidth, int bodyHeight)
         {
             fixed (byte* px = Pixels)
-            fixed (byte* a = alpha)
-            fixed (byte* c = color)
+            fixed (byte* f = frame)
             fixed (byte* al = _alpha)
             {
                 // The strip above the pet is redrawn from scratch: the bubble may have moved.
@@ -71,15 +74,16 @@ namespace DshLitePet
                     byte* row = px + y * Width * 4;
                     for (int x = 0; x < Width * 4; x++) row[x] = 0;
                 }
-                for (int y = 0; y < videoHeight; y++)
+                int stride = frameWidth * 4;
+                for (int y = 0; y < bodyHeight; y++)
                 {
-                    byte* src = a + y * videoWidth * 4;
-                    byte* rgb = c + y * videoWidth * 4;
+                    byte* rgb = f + y * stride;
+                    byte* mask = f + (bodyHeight + y) * stride;
                     byte* dst = px + (PetTop + y) * Width * 4;
-                    int alphaRow = y * videoWidth;
-                    for (int x = 0; x < videoWidth; x++)
+                    int alphaRow = y * frameWidth;
+                    for (int x = 0; x < frameWidth; x++)
                     {
-                        byte av = src[x * 4 + 1]; // alpha video is gray; any channel works
+                        byte av = mask[x * 4 + 1]; // the mask band is gray; any channel works
                         // H.264 noise gives the "transparent" background alpha 1..20; the
                         // window's per-pixel hit test treats any non-zero alpha as solid,
                         // so clamp the noise floor to zero.
