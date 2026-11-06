@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * Builds runtime/pet/DshLitePet.exe with the .NET Framework compiler that ships
  * with Windows. No SDK, no NuGet, no MSBuild: the pet only needs System.Drawing
