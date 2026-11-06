@@ -1,4 +1,4 @@
-// dsh-lite-pet desktop helper: one layered, click-through window that plays
+﻿// dsh-lite-pet desktop helper: one layered, click-through window that plays
 // H.264 color + alpha tracks through Media Foundation and draws its own bubble.
 using System;
 using System.Collections.Generic;
@@ -64,6 +64,7 @@ namespace DshLitePet
         private static byte[] _fadeSnapshot;
         private static long _fadeStart = -1;
         private const long FadeMs = 260;
+
 
         private static void Main(string[] args)
         {
@@ -701,6 +702,9 @@ namespace DshLitePet
         }
     }
 }
+
+
+
 
 
 
