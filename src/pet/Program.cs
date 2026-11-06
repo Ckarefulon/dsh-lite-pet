@@ -47,8 +47,6 @@ namespace DshLitePet
         private static int _windowY;
         private static int _windowWidth;
         private static int _windowHeight;
-        private static Bitmap _frameBitmap;
-        private static Bitmap _scaledBitmap;
 
         private static bool _dragging;
         private static bool _dragPet;
@@ -61,6 +59,7 @@ namespace DshLitePet
         private static int _dragStartWindowX;
         private static int _dragStartWindowY;
         private static IntPtr _handCursor;
+        private static int[] _scaleSrcX, _scaleFracX, _scaleSrcY, _scaleFracY;
         private static byte[] _fadeSnapshot;
         private static long _fadeStart = -1;
         private const long FadeMs = 260;
@@ -102,8 +101,6 @@ namespace DshLitePet
             {
                 if (_clip != null) _clip.Dispose();
                 if (_surface != null) _surface.Dispose();
-                if (_frameBitmap != null) _frameBitmap.Dispose();
-                if (_scaledBitmap != null) _scaledBitmap.Dispose();
                 if (_canvas != null) _canvas.Dispose();
                 if (_ipc != null) _ipc.Dispose();
                 Mf.Stop();
@@ -172,21 +169,13 @@ namespace DshLitePet
             _windowHeight = (int)Math.Round(_canvas.Height * _scale);
             if (_surface != null) _surface.Dispose();
             _surface = new Native.LayeredSurface(_windowWidth, _windowHeight);
-            if (_scaledBitmap != null) _scaledBitmap.Dispose();
-            if (_frameBitmap != null) _frameBitmap.Dispose();
-            _frameBitmap = null;
-            _scaledBitmap = null;
-            if (_scale != 1.0)
-            {
-                _frameBitmap = new Bitmap(_canvas.Width, _canvas.Height, PixelFormat.Format32bppPArgb);
-                _scaledBitmap = new Bitmap(_windowWidth, _windowHeight, PixelFormat.Format32bppPArgb);
-            }
         }
 
         private static void ApplyScale(double scale)
         {
             if (Math.Abs(scale - _scale) < 0.001) return;
             _scale = scale;
+            _scaleSrcX = null;
             _settings.Scale = scale;
             int oldWidth = _windowWidth;
             int oldHeight = _windowHeight;
@@ -490,43 +479,76 @@ namespace DshLitePet
             }
             else
             {
+                BuildScaleTables();
                 UploadScaled();
             }
             _surface.Present(_hwnd, _windowX, _windowY);
         }
 
-        private static void UploadScaled()
+        /// <summary>
+        /// Bilinear scale straight from the canvas into the layered DIB. GDI+ DrawImage was
+        /// costing more than the video decode itself (~7ms/frame at 0.75×).
+        /// </summary>
+        private static unsafe void UploadScaled()
         {
-            BitmapData frame = _frameBitmap.LockBits(
-                new Rectangle(0, 0, _canvas.Width, _canvas.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
-            try
+            int sw = _canvas.Width;
+            int sh = _canvas.Height;
+            int dw = _windowWidth;
+            int dh = _windowHeight;
+            fixed (byte* p = _canvas.Pixels)
             {
-                for (int y = 0; y < _canvas.Height; y++)
-                    Marshal.Copy(_canvas.Pixels, y * _canvas.Width * 4, frame.Scan0 + y * frame.Stride, _canvas.Width * 4);
+                byte* dstBase = (byte*)_surface.Bits;
+                for (int dy = 0; dy < dh; dy++)
+                {
+                    int sy = _scaleSrcY[dy];
+                    int fy = _scaleFracY[dy];
+                    int sy1 = sy + 1 < sh ? sy + 1 : sh - 1;
+                    byte* r0 = p + sy * sw * 4;
+                    byte* r1 = p + sy1 * sw * 4;
+                    byte* drow = dstBase + dy * dw * 4;
+                    for (int dx = 0; dx < dw; dx++)
+                    {
+                        int sx = _scaleSrcX[dx];
+                        int fx = _scaleFracX[dx];
+                        int sx1 = sx + 1 < sw ? sx + 1 : sw - 1;
+                        int i00 = sx * 4;
+                        int i10 = sx1 * 4;
+                        int w00 = (256 - fx) * (256 - fy);
+                        int w10 = fx * (256 - fy);
+                        int w01 = (256 - fx) * fy;
+                        int w11 = fx * fy;
+                        int o = dx * 4;
+                        drow[o] = (byte)((r0[i00] * w00 + r0[i10] * w10 + r1[i00] * w01 + r1[i10] * w11) >> 16);
+                        drow[o + 1] = (byte)((r0[i00 + 1] * w00 + r0[i10 + 1] * w10 + r1[i00 + 1] * w01 + r1[i10 + 1] * w11) >> 16);
+                        drow[o + 2] = (byte)((r0[i00 + 2] * w00 + r0[i10 + 2] * w10 + r1[i00 + 2] * w01 + r1[i10 + 2] * w11) >> 16);
+                        drow[o + 3] = (byte)((r0[i00 + 3] * w00 + r0[i10 + 3] * w10 + r1[i00 + 3] * w01 + r1[i10 + 3] * w11) >> 16);
+                    }
+                }
             }
-            finally
+        }
+
+        /// <summary>Source index and 8-bit fraction for every destination column/row (no divisions in the loop).</summary>
+        private static void BuildScaleTables()
+        {
+            if (_scaleSrcX != null && _scaleSrcX.Length == _windowWidth &&
+                _scaleSrcY != null && _scaleSrcY.Length == _windowHeight) return;
+            int sw = _canvas.Width;
+            int sh = _canvas.Height;
+            _scaleSrcX = new int[_windowWidth];
+            _scaleFracX = new int[_windowWidth];
+            for (int dx = 0; dx < _windowWidth; dx++)
             {
-                _frameBitmap.UnlockBits(frame);
+                int fixedValue = (dx * sw << 8) / _windowWidth;
+                _scaleSrcX[dx] = fixedValue >> 8;
+                _scaleFracX[dx] = fixedValue & 0xFF;
             }
-            using (Graphics g = Graphics.FromImage(_scaledBitmap))
+            _scaleSrcY = new int[_windowHeight];
+            _scaleFracY = new int[_windowHeight];
+            for (int dy = 0; dy < _windowHeight; dy++)
             {
-                // SourceCopy replaces the destination pixels (alpha included). Without this
-                // each scaled frame would be blended over the previous one and the animation
-                // would trail.
-                g.CompositingMode = CompositingMode.SourceCopy;
-                g.InterpolationMode = InterpolationMode.Bilinear;
-                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                g.DrawImage(_frameBitmap, new Rectangle(0, 0, _windowWidth, _windowHeight));
-            }
-            BitmapData scaled = _scaledBitmap.LockBits(
-                new Rectangle(0, 0, _windowWidth, _windowHeight), ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
-            try
-            {
-                _surface.UploadRows(scaled.Scan0, scaled.Stride, _windowWidth * 4, _windowHeight);
-            }
-            finally
-            {
-                _scaledBitmap.UnlockBits(scaled);
+                int fixedValue = (dy * sh << 8) / _windowHeight;
+                _scaleSrcY[dy] = fixedValue >> 8;
+                _scaleFracY[dy] = fixedValue & 0xFF;
             }
         }
 
@@ -702,6 +724,10 @@ namespace DshLitePet
         }
     }
 }
+
+
+
+
 
 
 

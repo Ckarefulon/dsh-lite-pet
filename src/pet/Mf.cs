@@ -9,6 +9,7 @@ namespace DshLitePet
     {
         public static Guid Video = new Guid("73646976-0000-0010-8000-00AA00389B71");
         public static Guid Rgb32 = new Guid("00000016-0000-0010-8000-00AA00389B71");
+
         public static Guid MajorType = new Guid("48eba18e-f8c9-4687-bf11-0a74c9f96a8f");
         public static Guid Subtype = new Guid("f7e34c9a-42e8-4714-b74b-cb29d72c35e5");
         public static Guid FrameSize = new Guid("1652c33d-d6b2-4012-b834-72030849a37d");
@@ -261,4 +262,10 @@ namespace DshLitePet
 
     }
 }
+
+
+
+
+
+
 
