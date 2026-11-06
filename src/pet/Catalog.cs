@@ -1,4 +1,4 @@
-// Animation catalog loaded from runtime/media/index.json (produced by tools/build-media.mjs).
+﻿// Animation catalog loaded from runtime/media/index.json (produced by tools/build-media.mjs).
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -13,8 +13,7 @@ namespace DshLitePet
         public string Name;
         public string Group;
         public string Kind;
-        public string ColorPath;
-        public string AlphaPath;
+        public string FilePath;
         public int Ms;
         public int Fps;
 
@@ -37,7 +36,7 @@ namespace DshLitePet
             var root = (Dictionary<string, object>)Json.Parse(json);
             var catalog = new Catalog();
             catalog.Width = (int)Json.Number(root, "width", 640);
-            catalog.Height = (int)Json.Number(root, "height", 360);
+            catalog.Height = (int)Json.Number(root, "bodyHeight", 360);
             var list = (List<object>)root["animations"];
             foreach (object item in list)
             {
@@ -51,8 +50,7 @@ namespace DshLitePet
                     Ms = (int)Json.Number(node, "ms", 10000),
                     Fps = (int)Json.Number(node, "fps", 24),
                 };
-                entry.ColorPath = Path.Combine(mediaDir, Json.String(node, "color"));
-                entry.AlphaPath = Path.Combine(mediaDir, Json.String(node, "alpha"));
+                entry.FilePath = Path.Combine(mediaDir, Json.String(node, "file"));
                 catalog.Animations.Add(entry);
             }
             return catalog;
@@ -212,3 +210,4 @@ namespace DshLitePet
         }
     }
 }
+

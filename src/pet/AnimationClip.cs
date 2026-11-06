@@ -1,4 +1,5 @@
-// One animation clip = a color video plus its alpha video, decoded together.
+﻿// One animation clip = one H.264 file whose frame is the color image stacked on top of
+// its grayscale alpha mask (2× body height). A single decoder yields both planes.
 using System;
 using System.Runtime.InteropServices;
 
@@ -9,42 +10,35 @@ namespace DshLitePet
         public readonly CatalogEntry Entry;
         public int Width;
         public int Height;
-        public byte[] Color;
-        public byte[] Alpha;
-        private IMFSourceReader _colorReader;
-        private IMFSourceReader _alphaReader;
+        public int BodyHeight;
+        public byte[] Frame;
+        private IMFSourceReader _reader;
 
         public AnimationClip(CatalogEntry entry)
         {
             Entry = entry;
-            _colorReader = Mf.Open(entry.ColorPath, out Width, out Height);
-            int aw;
-            int ah;
-            _alphaReader = Mf.Open(entry.AlphaPath, out aw, out ah);
-            if (aw != Width || ah != Height) throw new InvalidOperationException("alpha size mismatch for " + entry.Id);
-            Color = new byte[Width * Height * 4];
-            Alpha = new byte[Width * Height * 4];
+            _reader = Mf.Open(entry.FilePath, out Width, out Height);
+            BodyHeight = Height / 2;
+            if (BodyHeight <= 0 || BodyHeight * 2 != Height) throw new InvalidOperationException("clip frame is not color+alpha stacked: " + entry.Id);
+            Frame = new byte[Width * Height * 4];
         }
 
-        /// <summary>Decodes the next frame pair. Returns false at end of clip (the caller decides whether to loop).</summary>
+        /// <summary>Decodes the next frame (color on top, alpha mask below). False at end of clip.</summary>
         public bool TryReadFrame()
         {
-            long pts;
-            if (!Mf.Read(_colorReader, Color, Width, Height, out pts)) return false;
-            if (!Mf.Read(_alphaReader, Alpha, Width, Height, out pts)) return false;
-            return true;
+            long stamp;
+            return Mf.Read(_reader, Frame, Width, Height, out stamp);
         }
 
         public void Rewind()
         {
-            Mf.Rewind(_colorReader);
-            Mf.Rewind(_alphaReader);
+            Mf.Rewind(_reader);
         }
 
         public void Dispose()
         {
-            if (_colorReader != null) { Marshal.ReleaseComObject(_colorReader); _colorReader = null; }
-            if (_alphaReader != null) { Marshal.ReleaseComObject(_alphaReader); _alphaReader = null; }
+            if (_reader != null) Marshal.ReleaseComObject(_reader);
+            _reader = null;
         }
     }
 }

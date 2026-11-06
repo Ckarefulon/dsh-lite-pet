@@ -28,7 +28,6 @@ const SOURCE = resolve(arg('--from', join(ROOT, 'vendor/upstream/dsh-pet/assets/
 const OUT = resolve(arg('--out', join(ROOT, 'runtime/media')))
 const ONLY = arg('--only', '')
 const CRF = arg('--crf', '23')
-const ALPHA_CRF = arg('--alpha-crf', '20')
 const FORCE = flag('--force')
 const FFMPEG = process.env.FFMPEG || 'ffmpeg'
 const FFPROBE = process.env.FFPROBE || 'ffprobe'
@@ -116,36 +115,36 @@ async function main() {
     if (!meta) continue
     index += 1
     const id = String(index).padStart(3, '0')
-    const colorName = `${id}.mp4`
-    const alphaName = `${id}.a.mp4`
-    const colorPath = join(OUT, colorName)
-    const alphaPath = join(OUT, alphaName)
+    const fileName = `${id}.mp4`
+    const filePath = join(OUT, fileName)
     const sourcePath = join(SOURCE, `${name}.webm`)
     const fps = FPS_OVERRIDE[name] ?? 24
     const sourceMtime = statSync(sourcePath).mtimeMs
 
-    const fresh = (target) => existsSync(target) && !FORCE && statSync(target).mtimeMs >= sourceMtime
-    if (!fresh(colorPath)) {
-      run(FFMPEG, ['-v', 'error', '-y', '-i', sourcePath, '-an', '-vf', `fps=${fps}`, '-c:v', 'libx264',
-        '-preset', 'slow', '-crf', CRF, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', colorPath])
-    }
-    if (!fresh(alphaPath)) {
-      // libvpx-vp9 is the only decoder that surfaces the WebM alpha side stream;
-      // the native "Google VP9" decoder returns opaque frames.
+    // One clip = one video: the color frame on top and its alpha mask stacked
+    // underneath. The mask is thresholded first: a binary band costs almost nothing
+    // to encode (large flat areas) and the compositor already treats alpha as a mask.
+    const fresh = existsSync(filePath) && !FORCE && statSync(filePath).mtimeMs >= sourceMtime
+    if (!fresh) {
       run(FFMPEG, ['-v', 'error', '-y', '-c:v', 'libvpx-vp9', '-i', sourcePath, '-an',
-        '-vf', `fps=${fps},alphaextract,format=gray`,
-        '-c:v', 'libx264', '-preset', 'slow', '-crf', ALPHA_CRF, '-pix_fmt', 'yuv420p', '-color_range', 'tv',
-        '-movflags', '+faststart', alphaPath])
+        '-filter_complex',
+        `[0:v]fps=${fps},format=rgba,split=2[c][a];` +
+          '[c]scale=640:360,format=yuv420p[col];' +
+          "[a]alphaextract,scale=640:360,lut=y='if(gt(val,120),255,0)',format=yuv420p[alp];" +
+          '[col][alp]vstack=inputs=2,format=yuv420p[v]',
+        '-map', '[v]',
+        '-c:v', 'libx264', '-preset', 'slow', '-crf', CRF, '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart', filePath])
     }
 
-    const duration = probeDurationMs(colorPath, sourcePath)
-    animations.push({ id, name, group: meta.group, kind: meta.kind, color: colorName, alpha: alphaName, ms: duration, fps })
-    bytes += statSync(colorPath).size + statSync(alphaPath).size
+    const duration = probeDurationMs(filePath, sourcePath)
+    animations.push({ id, name, group: meta.group, kind: meta.kind, file: fileName, ms: duration, fps })
+    bytes += statSync(filePath).size
     process.stdout.write(`[media] ${id} ${meta.group}/${meta.kind} ${name} (${duration}ms)\n`)
     await pace()
   }
 
-  writeFileSync(join(OUT, 'index.json'), JSON.stringify({ version: 1, width: 640, height: 360, animations }, null, 2) + '\n')
+  writeFileSync(join(OUT, 'index.json'), JSON.stringify({ version: 2, width: 640, bodyHeight: 360, animations }, null, 2) + '\n')
   console.log(`[media] ${animations.length} clips -> ${OUT} (${(bytes / 1048576).toFixed(1)} MiB)`)
 }
 
@@ -165,4 +164,5 @@ main().catch((error) => {
   console.error(`[media] ${error.message}`)
   process.exit(1)
 })
+
 
