@@ -1,4 +1,4 @@
-// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble
+﻿// The layered window canvas: premultiplied pet pixels, the eroded hit mask, and the speech bubble
 // (which can be dragged vertically, so it is composited over the pet instead of living in a fixed strip).
 using System;
 using System.Drawing;
@@ -40,8 +40,11 @@ namespace DshLitePet
         /// <summary>Vertical nudge of the bubble, in canvas pixels; persisted by the caller.</summary>
         public int BubbleOffsetY;
 
+        public int VideoHeight { get; private set; }
+
         public PetCanvas(int videoWidth, int videoHeight)
         {
+            VideoHeight = videoHeight;
             Width = videoWidth;
             Height = videoHeight + BubbleArea;
             PetTop = BubbleArea;
@@ -58,14 +61,11 @@ namespace DshLitePet
 
         public Rectangle BubbleRect { get { return _bubbleRect; } }
 
-        /// <summary>
-        /// Composes one decoded frame: color rows [0, bodyHeight) on top, the matching
-        /// grayscale alpha rows [bodyHeight, 2*bodyHeight) underneath.
-        /// </summary>
-        public unsafe void ComposePet(byte[] frame, int frameWidth, int bodyHeight)
+        /// <summary>Composes one decoded RGBA frame (WebP gives colour and alpha together).</summary>
+        public unsafe void ComposePet(byte[] rgba, int frameWidth, int bodyHeight)
         {
             fixed (byte* px = Pixels)
-            fixed (byte* f = frame)
+            fixed (byte* f = rgba)
             fixed (byte* al = _alpha)
             {
                 // The strip above the pet is redrawn from scratch: the bubble may have moved.
@@ -78,15 +78,13 @@ namespace DshLitePet
                 for (int y = 0; y < bodyHeight; y++)
                 {
                     byte* rgb = f + y * stride;
-                    byte* mask = f + (bodyHeight + y) * stride;
                     byte* dst = px + (PetTop + y) * Width * 4;
                     int alphaRow = y * frameWidth;
                     for (int x = 0; x < frameWidth; x++)
                     {
-                        byte av = mask[x * 4 + 1]; // the mask band is gray; any channel works
-                        // H.264 noise gives the "transparent" background alpha 1..20; the
-                        // window's per-pixel hit test treats any non-zero alpha as solid,
-                        // so clamp the noise floor to zero.
+                        byte av = rgb[x * 4 + 3];
+                        // Lossy decoding leaves a little noise in the transparent area; the
+                        // window hit test treats any non-zero alpha as solid, so clamp it.
                         if (av < 8) av = 0;
                         al[alphaRow + x] = av;
                         int p = x * 4;
@@ -98,12 +96,12 @@ namespace DshLitePet
                         if (av == 255)
                         {
                             // Interior pixels are the overwhelming majority: copy, do not multiply.
-                            dst[p] = rgb[p]; dst[p + 1] = rgb[p + 1]; dst[p + 2] = rgb[p + 2]; dst[p + 3] = 255;
+                            dst[p] = rgb[p + 2]; dst[p + 1] = rgb[p + 1]; dst[p + 2] = rgb[p]; dst[p + 3] = 255;
                             continue;
                         }
-                        dst[p] = (byte)(rgb[p] * av / 255);
+                        dst[p] = (byte)(rgb[p + 2] * av / 255);
                         dst[p + 1] = (byte)(rgb[p + 1] * av / 255);
-                        dst[p + 2] = (byte)(rgb[p + 2] * av / 255);
+                        dst[p + 2] = (byte)(rgb[p] * av / 255);
                         dst[p + 3] = av;
                     }
                 }
@@ -307,4 +305,6 @@ namespace DshLitePet
         Done = 2,
     }
 }
+
+
 

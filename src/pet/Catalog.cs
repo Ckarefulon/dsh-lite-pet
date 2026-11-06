@@ -14,8 +14,6 @@ namespace DshLitePet
         public string Group;
         public string Kind;
         public string FilePath;
-        public int Ms;
-        public int Fps;
 
         public bool IsLoopingKind()
         {
@@ -47,8 +45,6 @@ namespace DshLitePet
                     Name = Json.String(node, "name"),
                     Group = Json.String(node, "group"),
                     Kind = Json.String(node, "kind"),
-                    Ms = (int)Json.Number(node, "ms", 10000),
-                    Fps = (int)Json.Number(node, "fps", 24),
                 };
                 entry.FilePath = Path.Combine(mediaDir, Json.String(node, "file"));
                 catalog.Animations.Add(entry);
@@ -210,4 +206,6 @@ namespace DshLitePet
         }
     }
 }
+
+
 

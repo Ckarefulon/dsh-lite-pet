@@ -25,15 +25,16 @@ namespace DshLitePet
         private static Native.LayeredSurface _surface;
         private static PetMenu _menu;
         private static Ipc _ipc;
-        private static AnimationClip _clip;
+        private static WebpAnimation _webp;
+        private static byte[] _webpFrame;
+        private static int _webpTimestamp;
+        private static long _frameDue;
+        private static long _playBase;
         private static IntPtr _hwnd;
         private static Native.WndProcDelegate _wndProc; // keeps the thunk alive
-        private static readonly Stopwatch FrameClock = new Stopwatch();
         private static readonly Stopwatch Uptime = Stopwatch.StartNew();
         private static readonly Random Rng = new Random();
 
-        private static int _frameIndex;
-        private static double _frameMs = 1000.0 / 24.0;
         private static bool _oneShot;
         private static string _mode = "idle";
         private static string _bubbleText;
@@ -77,7 +78,6 @@ namespace DshLitePet
             }
 
             SetProcessDPIAware();
-            Mf.Start();
             try
             {
                 _settings = PetSettings.Load();
@@ -99,11 +99,10 @@ namespace DshLitePet
             }
             finally
             {
-                if (_clip != null) _clip.Dispose();
+                if (_webp != null) _webp.Dispose();
                 if (_surface != null) _surface.Dispose();
                 if (_canvas != null) _canvas.Dispose();
                 if (_ipc != null) _ipc.Dispose();
-                Mf.Stop();
             }
         }
 
@@ -435,17 +434,16 @@ namespace DshLitePet
                 SetBubble(null, BubbleDot.None);
             }
 
-            if (_clip == null) { PlayKind("idle", true, 0); return; }
+            if (_webp == null) { PlayKind("idle", true, 0); return; }
 
-            if (FrameClock.Elapsed.TotalMilliseconds >= _frameIndex * _frameMs)
+            if (now >= _frameDue && _webpFrame != null)
             {
-                if (!_clip.TryReadFrame())
+                Present();
+                if (!LoadNextFrame())
                 {
                     OnClipEnd(now);
                     return;
                 }
-                _frameIndex++;
-                Present();
             }
             else if (_bubbleDirty)
             {
@@ -453,12 +451,25 @@ namespace DshLitePet
             }
         }
 
+        private static bool LoadNextFrame()
+        {
+            IntPtr buffer;
+            int timestamp;
+            if (!_webp.TryNextFrame(out buffer, out timestamp)) return false;
+            int bytes = _webp.Width * _webp.Height * 4;
+            if (_webpFrame == null || _webpFrame.Length != bytes) _webpFrame = new byte[bytes];
+            Marshal.Copy(buffer, _webpFrame, 0, bytes);
+            _webpTimestamp = timestamp;
+            _frameDue = _playBase + timestamp;
+            return true;
+        }
+
         private static void Present()
         {
             // Recompose from the last decoded frame every time: a bubble-only repaint
             // must not leave the previous bubble behind.
-            if (_clip != null)
-                _canvas.ComposePet(_clip.Frame, _clip.Width, _clip.BodyHeight);
+            if (_webpFrame != null)
+                _canvas.ComposePet(_webpFrame, _webp.Width, _webp.Height);
             if (_fadeStart >= 0 && _fadeSnapshot != null)
             {
                 long elapsed = Uptime.ElapsedMilliseconds - _fadeStart;
@@ -564,32 +575,21 @@ namespace DshLitePet
 
         private static void OnClipEnd(long now)
         {
-            if (_oneShot || !_clip.Entry.IsLoopingKind())
+            if (_oneShot || !_webp.Entry.IsLoopingKind())
             {
                 if (_mode == "working") { PlayKind("work-busy", true, 0); return; }
                 if (_mode == "waiting") { PlayKind("work-waiting", true, 0); return; }
                 PlayKind("idle", true, 0);
                 return;
             }
-            // Reopen instead of seeking: SetCurrentPosition on a reader with video
-            // processing can leave ReadSample blocked, which froze the pet at the end
-            // of the first loop.
-            CatalogEntry entry = _clip.Entry;
-            _clip.Dispose();
-            _clip = null;
-            try
+            // Animated WebP can restart in place; no decoder reopen needed.
+            _webp.Reset();
+            _playBase = now;
+            if (!LoadNextFrame())
             {
-                _clip = new AnimationClip(entry);
-            }
-            catch (Exception)
-            {
-                _clip = null;
+                PlayKind("idle", true, 0);
                 return;
             }
-            _currentKind = _clip.Entry.Kind;
-            _frameIndex = 0;
-            _frameMs = _clip.Entry.Fps > 0 ? 1000.0 / _clip.Entry.Fps : 1000.0 / 24.0;
-            FrameClock.Restart();
             if (_currentKind == "idle" && now >= _nextActionAt)
             {
                 PlayRandomAction();
@@ -687,9 +687,9 @@ namespace DshLitePet
 
         private static void PlayClip(CatalogEntry entry, bool loop, bool force = false)
         {
-            if (_clip != null)
+            if (_webp != null)
             {
-                if (!force && _clip.Entry == entry && loop && !_oneShot) return;
+                if (!force && _webp.Entry == entry && loop && !_oneShot) return;
                 // Cross-fade from the frame that is on screen right now.
                 if (_canvas.Pixels != null)
                 {
@@ -698,32 +698,45 @@ namespace DshLitePet
                     Buffer.BlockCopy(_canvas.Pixels, 0, _fadeSnapshot, 0, _fadeSnapshot.Length);
                     _fadeStart = Uptime.ElapsedMilliseconds;
                 }
-                _clip.Dispose();
-                _clip = null;
+                _webp.Dispose();
+                _webp = null;
             }
             try
             {
-                _clip = new AnimationClip(entry);
+                _webp = new WebpAnimation(entry);
             }
             catch (Exception)
             {
-                _clip = null;
+                _webp = null;
                 CatalogEntry fallback = _catalog.First("idle");
                 if (fallback != null && fallback != entry)
                 {
-                    try { _clip = new AnimationClip(fallback); } catch (Exception) { _clip = null; }
+                    try { _webp = new WebpAnimation(fallback); } catch (Exception) { _webp = null; }
                 }
-                if (_clip == null) return;
+                if (_webp == null) return;
             }
-            _currentKind = _clip.Entry.Kind;
+            if (_webp.Width != _canvas.Width || _webp.Height != _canvas.VideoHeight)
+            {
+                // A clip with an unexpected canvas size would skew every pixel; skip it.
+                _webp.Dispose();
+                _webp = null;
+                return;
+            }
+            _currentKind = _webp.Entry.Kind;
             _oneShot = !loop;
-            _frameIndex = 0;
             _bubbleDirty = true;
-            _frameMs = _clip.Entry.Fps > 0 ? 1000.0 / _clip.Entry.Fps : 1000.0 / 24.0;
-            FrameClock.Restart();
+            _playBase = Uptime.ElapsedMilliseconds;
+            _frameDue = _playBase;
+            if (!LoadNextFrame())
+            {
+                _webp.Dispose();
+                _webp = null;
+            }
         }
     }
 }
+
+
 
 
 
