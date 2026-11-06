@@ -15,8 +15,8 @@ const index = join(mediaDir, 'index.json')
 if (!existsSync(index)) {
   failures.push('runtime/media/index.json missing (run `node tools/build-media.mjs`)')
 } else {
-  const clips = readdirSync(mediaDir).filter((file) => file.endsWith('.mp4'))
-  if (clips.length === 0) failures.push('runtime/media has no .mp4 clips')
+  const clips = readdirSync(mediaDir).filter((file) => file.endsWith('.webp'))
+  if (clips.length === 0) failures.push('runtime/media has no .webp clips')
   const bytes = readdirSync(mediaDir).reduce((sum, file) => sum + statSync(join(mediaDir, file)).size, 0)
   console.log(`[prepack] runtime/media: ${clips.length} files, ${(bytes / 1048576).toFixed(1)} MiB`)
 }
@@ -26,3 +26,4 @@ if (failures.length > 0) {
   process.exit(1)
 }
 console.log('[prepack] runtime looks complete')
+

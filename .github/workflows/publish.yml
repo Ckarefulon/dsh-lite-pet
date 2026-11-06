@@ -1,4 +1,4 @@
-name: publish
+﻿name: publish
 
 # Publishing uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret.
 # Configure the package on npmjs.com: Settings → Trusted Publisher → GitHub Actions,
@@ -40,15 +40,9 @@ jobs:
           fi
         shell: bash
 
-      - name: Install ffmpeg
-        run: choco install ffmpeg -y --no-progress
-        shell: pwsh
-
-      - name: Transcode the media library
+      - name: Build the media catalog
         run: node tools/build-media.mjs
-        env:
-          FFMPEG: ffmpeg
-          FFPROBE: ffprobe
+
 
       - name: Compile the native pet
         run: node tools/build-pet.mjs
@@ -66,3 +60,4 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
+

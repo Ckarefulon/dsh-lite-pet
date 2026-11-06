@@ -1,18 +1,15 @@
 #!/usr/bin/env node
 /**
- * Builds runtime/media from the upstream animation sources.
+ * Builds runtime/media from a directory of animated WebP clips.
  *
- * Every WebM is transcoded into two H.264 tracks the pet process can decode with
- * Media Foundation: a color track and a grayscale alpha track. The pet window is
- * layered, so per-pixel alpha is required; MF cannot decode VP9 alpha, which is
- * why this step exists at all.
+ * The pet decodes animated WebP directly with the bundled libwebp (no re-encoding,
+ * no Media Foundation, no ffmpeg). This step only classifies the files and writes
+ * the catalog the pet reads.
  *
  * Usage:
- *   node tools/build-media.mjs [--from <webm dir>] [--out <media dir>] [--only <substr>]
- *                              [--crf <color crf>] [--alpha-crf <alpha crf>] [--force]
+ *   node tools/build-media.mjs [--from <webp dir>] [--out <media dir>] [--force]
  */
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -22,15 +19,9 @@ const arg = (name, fallback) => {
   const index = args.indexOf(name)
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback
 }
-const flag = (name) => args.includes(name)
 
-const SOURCE = resolve(arg('--from', join(ROOT, 'vendor/upstream/dsh-pet/assets/webm')))
+const SOURCE = resolve(arg('--from', join(ROOT, 'vendor/webp')))
 const OUT = resolve(arg('--out', join(ROOT, 'runtime/media')))
-const ONLY = arg('--only', '')
-const CRF = arg('--crf', '23')
-const FORCE = flag('--force')
-const FFMPEG = process.env.FFMPEG || 'ffmpeg'
-const FFPROBE = process.env.FFPROBE || 'ffprobe'
 
 // —— upstream grouping (mirrors dsh-pet's assets/config.jsonc) ————————————————
 const WORK = {
@@ -42,8 +33,6 @@ const WORK = {
   '工作状态-垂头叹气冒汗': 'work-error',
 }
 const SKIP = new Set(['被鼠标拖拽悬空反馈'])
-// The idle loop is the only clip that runs continuously, so halve its frame rate.
-const FPS_OVERRIDE = { 待机呼吸休闲: 12 }
 
 const GROUP_LISTS = {
   小动作: [
@@ -73,96 +62,54 @@ const GROUP_LISTS = {
 const groupOf = new Map()
 for (const [group, names] of Object.entries(GROUP_LISTS)) for (const name of names) groupOf.set(name, group)
 
-function classify(name) {
-  if (SKIP.has(name)) return null
-  if (name === '待机呼吸休闲') return { kind: 'idle', group: '待机' }
-  if (WORK[name]) return { kind: WORK[name], group: '工作状态' }
-  if (name.startsWith('余额-')) return { kind: 'balance', group: '余额' }
-  if (name.startsWith('点击回应-')) return { kind: 'click', group: '点击回应' }
-  if (name.startsWith('碎碎念-')) return { kind: 'whisper', group: '碎碎念' }
-  const group = groupOf.get(name)
-  if (group) return { kind: 'action', group }
-  return { kind: 'action', group: '其他' }
-}
-
-const run = (bin, params) => {
-  const result = spawnSync(bin, params, { stdio: 'ignore', windowsHide: true })
-  if (result.error) throw new Error(`${bin} failed: ${result.error.message}`)
-  if (result.status !== 0) throw new Error(`${bin} exited with ${result.status}: ${params.join(' ')}`)
-}
-
-const pace = () => new Promise((resolve) => setImmediate(resolve))
-
-async function main() {
-  if (!existsSync(SOURCE)) {
-    console.error(`[media] source directory not found: ${SOURCE}`)
-    console.error('[media] run `git subtree add --prefix=vendor/upstream <upstream> main --squash` first, or pass --from <dir>')
-    process.exit(1)
-  }
-  mkdirSync(OUT, { recursive: true })
-
-  const names = readdirSync(SOURCE)
-    .filter((file) => file.endsWith('.webm'))
-    .map((file) => file.slice(0, -'.webm'.length))
-    .filter((name) => !ONLY || name.includes(ONLY))
-    .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
-
-  const animations = []
-  let index = 0
-  let bytes = 0
+const CLASSIFY = new Map()
+for (const [name, kind] of Object.entries(WORK)) CLASSIFY.set(name, { group: '工作', kind })
+CLASSIFY.set('待机呼吸休闲', { group: '待机', kind: 'idle' })
+for (const [group, names] of Object.entries(GROUP_LISTS)) {
   for (const name of names) {
-    const meta = classify(name)
-    if (!meta) continue
-    index += 1
-    const id = String(index).padStart(3, '0')
-    const fileName = `${id}.mp4`
-    const filePath = join(OUT, fileName)
-    const sourcePath = join(SOURCE, `${name}.webm`)
-    const fps = FPS_OVERRIDE[name] ?? 24
-    const sourceMtime = statSync(sourcePath).mtimeMs
-
-    // One clip = one video: the color frame on top and its alpha mask stacked
-    // underneath. The mask is thresholded first: a binary band costs almost nothing
-    // to encode (large flat areas) and the compositor already treats alpha as a mask.
-    const fresh = existsSync(filePath) && !FORCE && statSync(filePath).mtimeMs >= sourceMtime
-    if (!fresh) {
-      run(FFMPEG, ['-v', 'error', '-y', '-c:v', 'libvpx-vp9', '-i', sourcePath, '-an',
-        '-filter_complex',
-        `[0:v]fps=${fps},format=rgba,split=2[c][a];` +
-          '[c]scale=640:360,format=yuv420p[col];' +
-          "[a]alphaextract,scale=640:360,lut=y='if(gt(val,120),255,0)',format=yuv420p[alp];" +
-          '[col][alp]vstack=inputs=2,format=yuv420p[v]',
-        '-map', '[v]',
-        '-c:v', 'libx264', '-preset', 'slow', '-crf', CRF, '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart', filePath])
-    }
-
-    const duration = probeDurationMs(filePath, sourcePath)
-    animations.push({ id, name, group: meta.group, kind: meta.kind, file: fileName, ms: duration, fps })
-    bytes += statSync(filePath).size
-    process.stdout.write(`[media] ${id} ${meta.group}/${meta.kind} ${name} (${duration}ms)\n`)
-    await pace()
+    const kind = group === '睡觉' ? 'sleep' : group === '文字' ? 'whisper' : 'action'
+    CLASSIFY.set(name, { group, kind })
   }
-
-  writeFileSync(join(OUT, 'index.json'), JSON.stringify({ version: 2, width: 640, bodyHeight: 360, animations }, null, 2) + '\n')
-  console.log(`[media] ${animations.length} clips -> ${OUT} (${(bytes / 1048576).toFixed(1)} MiB)`)
+}
+// Extra clips the pet plays when asked (balance check and click feedback).
+const KINDS_BY_NAME = (name) => {
+  if (name.startsWith('查余额')) return { group: '查余额', kind: 'balance' }
+  if (name.startsWith('点击回应') || name.startsWith('点击')) return { group: '点击', kind: 'click' }
+  return null
 }
 
-function probeDurationMs(colorPath, fallbackPath) {
-  try {
-    const result = spawnSync(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', colorPath], { encoding: 'utf8', windowsHide: true })
-    const value = Number.parseFloat(String(result.stdout || '').trim())
-    if (Number.isFinite(value) && value > 0) return Math.round(value * 1000)
-  } catch {
-    /* fall through */
-  }
-  const raw = readFileSync(fallbackPath).length
-  return Math.min(10040, Math.max(1000, Math.round(raw / 50)))
-}
+const names = readdirSync(SOURCE)
+  .filter((file) => file.toLowerCase().endsWith('.webp'))
+  .map((file) => file.slice(0, -5))
+  .filter((name) => !SKIP.has(name))
+  .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
 
-main().catch((error) => {
-  console.error(`[media] ${error.message}`)
+if (names.length === 0) {
+  console.error(`[media] no .webp files in ${SOURCE} — drop the transcoded clips there first`)
   process.exit(1)
-})
+}
 
+mkdirSync(OUT, { recursive: true })
+const animations = []
+let index = 0
+let bytes = 0
+for (const name of names) {
+  const meta = CLASSIFY.get(name) ?? KINDS_BY_NAME(name)
+  if (!meta) continue
+  index += 1
+  const id = String(index).padStart(3, '0')
+  const fileName = `${id}.webp`
+  const sourcePath = join(SOURCE, `${name}.webp`)
+  const targetPath = join(OUT, fileName)
+  if (!existsSync(targetPath) || statSync(targetPath).size !== statSync(sourcePath).size) {
+    copyFileSync(sourcePath, targetPath)
+  }
+  bytes += statSync(targetPath).size
+  animations.push({ id, name, group: meta.group, kind: meta.kind, file: fileName })
+}
 
+writeFileSync(
+  join(OUT, 'index.json'),
+  JSON.stringify({ version: 3, width: 640, bodyHeight: 360, animations }, null, 2) + '\n',
+)
+console.log(`[media] ${animations.length} clips -> ${OUT} (${(bytes / 1048576).toFixed(1)} MiB)`)

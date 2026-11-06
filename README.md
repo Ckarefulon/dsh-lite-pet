@@ -36,15 +36,15 @@
 | `tools/build-pet.mjs` | 用系统自带 `csc.exe` 编译 `src/pet/*.cs` |
 | `runtime/` | 构建产物（不入库；发布时随 npm 包分发） |
 
-### 为什么转码
+### 素材：动图 WebP，没有再转码
 
-桌宠窗口是 layered window，必须逐像素 alpha，而 Media Foundation 不能解码 WebM/VP9 的 alpha 旁路流。构建时把每段动画压成**一个** H.264 文件：上半 640×360 是彩色，下半 640×360 是二值化后的遮罩带（`vstack` 拼接）。运行时只开**一个**解码器，一帧同时拿到彩色与遮罩，逐像素预乘后上屏——没有双解码、没有双文件。代价是构建依赖 ffmpeg，收益是运行时没有 Chromium。
+每段动画就是一个**动画 WebP**（带 alpha，`ffmpeg -c:v libwebp_anim` 或任何 WebP 动画工具都能产出），直接放进 `vendor/webp/`，`node tools/build-media.mjs` 只做分类并生成 `index.json`：不转码、不需要 ffmpeg、不依赖 Media Foundation。运行时装在包内的 `libwebp`（约 390 KB，BSD 许可）逐帧解码，解出来的就是 RGBA，彩色和透明一次到位。
 
 ### 资源占用（本机实测，1080p / 125% 缩放）
 
-- 内存：约 75–90 MB（Media Foundation 解码器占大头）。
-- CPU：待机 12 fps 播放约 13% 单核；工作/动作 24 fps 约 20–26% 单核。
-- 磁盘：`runtime/media` 约 65 MB（105 段动画，640×360，彩色 CRF 23）。
+- 内存：约 37 MB（只加载当前这一段的 WebP 数据）。
+- CPU：工作状态约 13% 单核；待机更低（素材帧率越低越省）。
+- 磁盘：`runtime/media` 取决于素材编码质量（105 段、640×360、15 fps、q80 约 300 MB；调低质量或帧率会明显变小）。
 
 ## 开发
 
