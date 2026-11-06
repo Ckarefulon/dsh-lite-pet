@@ -1,5 +1,10 @@
 node_modules/
 runtime/media/
+runtime/media-full/
 runtime/pet/
+runtime/*.zip
 *.log
 .DS_Store
+# Scratch files from local testing
+runtime/probe.ps1
+runtime/*.ps1

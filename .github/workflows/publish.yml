@@ -1,4 +1,4 @@
-﻿name: publish
+name: publish
 
 # Publishing uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret.
 # Configure the package on npmjs.com: Settings → Trusted Publisher → GitHub Actions,
@@ -28,36 +28,44 @@ jobs:
         run: npm install -g npm@latest
         shell: pwsh
 
-      - name: Ensure the upstream subtree exists
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -d vendor/upstream/dsh-pet ]; then
-            echo "subtree already present"
-          else
-            git subtree add --prefix=vendor/upstream https://github.com/PC2005-cloud/dsh-pet.git main --squash \
-              -m "chore(vendor): add upstream dsh-pet assets"
-          fi
-        shell: bash
+      # The WebP clips are transcoded from the committed VP9 masters in vendor/webm, which
+      # needs ffmpeg. It is not on the windows-latest image, so without this step the media
+      # build fails before anything is packed. (An earlier "git subtree add vendor/upstream"
+      # step stood here; nothing reads that tree — the masters are already committed — so it
+      # only added a network round trip that could fail the job.)
+      - name: Install ffmpeg
+        run: choco install ffmpeg --no-progress -y
+        shell: pwsh
 
-      - name: Build the media catalog
+      # The npm package carries only the core clips (idle, work states, balance, click,
+      # sleep). The 90+ ambient actions are packed separately and published with the
+      # GitHub release, where the plugin fetches them on first use.
+      - name: Build the core media catalog
         run: node tools/build-media.mjs
-
 
       - name: Compile the native pet
         run: node tools/build-pet.mjs
 
+      - name: Build the full animation set for the release asset
+        run: |
+          node tools/build-media.mjs --tier full --out runtime/media-full
+          node tools/pack-media.mjs
+
       - name: Verify the package payload
         run: node tools/prepack-check.mjs
+
+      - name: Verify the archive extractor
+        run: node tools/zip-selftest.mjs
 
       - name: Publish to npm (OIDC trusted publishing)
         run: npm publish --access public
 
-      - name: Attach the built helper to a GitHub release
+      - name: Attach the helper and the full animation set to a GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: |
+            runtime/dsh-lite-pet-media-full.zip
         env:
           GITHUB_TOKEN: ${{ github.token }}
-

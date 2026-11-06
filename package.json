@@ -1,6 +1,6 @@
 {
   "name": "dsh-lite-pet",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "轻量系统级桌宠：原生进程逐像素透明渲染，工作正文/等待确认/完成提示与余额查询联动，点击穿透",
   "type": "module",
   "main": "index.js",
@@ -26,7 +26,11 @@
     "index.js",
     "client",
     "assets/icon.png",
-    "runtime",
+    "runtime/pet/DshLitePet.exe",
+    "runtime/pet/libwebp.dll",
+    "runtime/pet/libwebpdemux.dll",
+    "runtime/pet/libsharpyuv.dll",
+    "runtime/media",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -34,8 +38,10 @@
   "scripts": {
     "build": "node tools/build-media.mjs && node tools/build-pet.mjs",
     "build:media": "node tools/build-media.mjs",
+    "build:media:full": "node tools/build-media.mjs --tier full --out runtime/media-full && node tools/pack-media.mjs",
     "build:pet": "node tools/build-pet.mjs",
     "test:pet": "node tools/smoke-pet.mjs",
+    "test:zip": "node tools/zip-selftest.mjs",
     "prepack": "node tools/prepack-check.mjs"
   },
   "engines": {

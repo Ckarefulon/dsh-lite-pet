@@ -18,7 +18,7 @@
  * @module dsh-lite-pet
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 export const name = 'dsh-lite-pet'
 
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
-const MEDIA_DIR = join(PACKAGE_ROOT, 'runtime', 'media')
+const CORE_MEDIA_DIR = join(PACKAGE_ROOT, 'runtime', 'media')
 const PET_EXE = join(PACKAGE_ROOT, 'runtime', 'pet', 'DshLitePet.exe')
 const STATE_ROUTE = '/api/dsh-lite-pet/state'
 const ENABLED_ROUTE = '/api/dsh-lite-pet/enabled'
@@ -35,6 +35,14 @@ const BUBBLE_TEXT_LIMIT = 120
 const BALANCE_VISIBLE_MS = 9000
 const RESTART_DELAY_MS = 4000
 const MAX_RESTARTS = 3
+
+// The npm package carries only the clips the pet needs to be usable (idle, work
+// states, balance, click, sleep ≈ 48 MiB). The 92 ambient actions weigh ~230 MiB,
+// so they ship as a GitHub Release asset and are cached on first use.
+const AMBIENT_ASSET = 'dsh-lite-pet-media-full.zip'
+const AMBIENT_RELEASE_BASE =
+  process.env.DSH_LITE_PET_ASSET_BASE ??
+  'https://github.com/Ckarefulon/dsh-lite-pet/releases/latest/download/'
 
 export function apply(ctx, config) {
   const supported = process.platform === 'win32'
@@ -87,6 +95,118 @@ function stateFile(config) {
   return join(home, 'dsh-lite-pet.json')
 }
 
+/** Where the optional full animation set is cached once downloaded. */
+function ambientCacheDir(config) {
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  return join(home, 'dsh-lite-pet-media')
+}
+
+function hasCatalog(dir) {
+  try {
+    return existsSync(join(dir, 'index.json'))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Media directory the pet should play from: the cached full set when it is present,
+ * otherwise the core clips that ship inside the package. The core set is always
+ * complete on its own, so a failed download degrades instead of breaking.
+ */
+function activeMediaDir(config) {
+  const cache = ambientCacheDir(config)
+  return hasCatalog(cache) ? cache : CORE_MEDIA_DIR
+}
+
+/**
+ * Exposed for the tier self-test: which media directory the pet should play from.
+ * Not part of the plugin API.
+ */
+export function resolveMediaDirForTest(config) {
+  return activeMediaDir(config ?? {})
+}
+
+/**
+ * Downloads the ambient animation set in the background. Nothing waits on it: the
+ * pet keeps playing the core clips and switches over on its next restart.
+ */
+async function fetchAmbientSet(ctx, runtime, config) {
+  if (runtime.ambient.status !== 'absent') return
+  const cache = ambientCacheDir(config)
+  if (hasCatalog(cache)) {
+    runtime.ambient.status = 'ready'
+    return
+  }
+  runtime.ambient.status = 'downloading'
+  const url = AMBIENT_RELEASE_BASE + AMBIENT_ASSET
+  const staging = cache + '.part'
+  try {
+    ctx.logger?.info?.(`[dsh-lite-pet] downloading the full animation set from ${url}`)
+    const response = await fetch(url, { redirect: 'follow' })
+    if (!response.ok || response.body === null) throw new Error(`HTTP ${response.status}`)
+    rmSync(staging, { recursive: true, force: true })
+    mkdirSync(staging, { recursive: true })
+    await extractZipTo(await response.arrayBuffer(), staging)
+    if (!hasCatalog(staging)) throw new Error('the archive has no index.json')
+    rmSync(cache, { recursive: true, force: true })
+    renameSync(staging, cache)
+    runtime.ambient.status = 'ready'
+    ctx.logger?.info?.('[dsh-lite-pet] the full animation set is ready; it plays from the next restart')
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true })
+    runtime.ambient.status = 'failed'
+    ctx.logger?.warn?.(`[dsh-lite-pet] cannot fetch the full animation set: ${String(error?.message ?? error)}`)
+  }
+}
+
+/**
+ * Minimal ZIP reader: stored and deflated entries, no data descriptors. The asset is
+ * produced by our own workflow, so the archive layout is predictable. Exported so the
+ * self-test exercises the same code the plugin uses instead of a copy of it.
+ */
+export async function extractZipTo(buffer, targetDir) {
+  const { inflateRawSync } = await import('node:zlib')
+  // Accept an ArrayBuffer (from fetch) or a Buffer (from readFileSync).
+  const bytes =
+    buffer instanceof ArrayBuffer
+      ? buffer
+      : buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+  const view = new DataView(bytes)
+  let offset = 0
+  while (offset + 4 <= bytes.byteLength) {
+    const signature = view.getUint32(offset, true)
+    if (signature !== 0x04034b50) break // not a local file header: end of the entries we handle
+    const flags = view.getUint16(offset + 6, true)
+    const method = view.getUint16(offset + 8, true)
+    const compressedSize = view.getUint32(offset + 18, true)
+    const uncompressedSize = view.getUint32(offset + 22, true)
+    const nameLength = view.getUint16(offset + 26, true)
+    const extraLength = view.getUint16(offset + 28, true)
+    const nameStart = offset + 30
+    const decoder = new TextDecoder()
+    const name = decoder.decode(new Uint8Array(bytes, nameStart, nameLength))
+    const dataStart = nameStart + nameLength + extraLength
+    const data = new Uint8Array(bytes, dataStart, compressedSize)
+    const outPath = join(targetDir, name)
+    if (name.endsWith('/')) {
+      mkdirSync(outPath, { recursive: true })
+    } else {
+      mkdirSync(dirname(outPath), { recursive: true })
+      const content = method === 0 ? data : method === 8 ? inflateRawSync(data) : null
+      if (content === null) throw new Error(`unsupported compression method ${method} for ${name}`)
+      writeFileSync(outPath, content)
+    }
+    void flags
+    void uncompressedSize
+    offset = dataStart + compressedSize
+    // Entries are usually followed by a data descriptor when bit 3 is set.
+    if ((flags & 0x0008) !== 0) {
+      while (offset + 4 <= bytes.byteLength && view.getUint32(offset, true) === 0x08074b50) offset += 16
+    }
+  }
+}
+
 function readPersistedFlags(config) {
   try {
     const raw = JSON.parse(readFileSync(stateFile(config), 'utf8'))
@@ -131,16 +251,21 @@ function createRuntime() {
     agents: new Map(), // sessionId -> { running, waiting, text, title, touched }
     doneText: null,
     doneAt: 0,
+    // absent | downloading | ready | failed — the optional full animation set.
+    ambient: { status: 'absent' },
   }
 }
 
 function ensurePet(ctx, runtime, profile) {
   if (runtime.disposing || runtime.pet || !runtime.enabled) return
-  if (!existsSync(PET_EXE) || !existsSync(MEDIA_DIR)) {
+  const mediaDir = activeMediaDir(profile.settings ?? {})
+  if (!existsSync(PET_EXE) || !existsSync(mediaDir)) {
     ctx.logger?.warn?.('[dsh-lite-pet] runtime/pet or runtime/media is missing; run `npm run build` first')
     return
   }
-  const child = spawn(PET_EXE, ['--media', MEDIA_DIR], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  // Fetch the optional ambient set in the background the first time the pet runs.
+  void fetchAmbientSet(ctx, runtime, profile.settings ?? {})
+  const child = spawn(PET_EXE, ['--media', mediaDir], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   runtime.pet = child
   runtime.ready = false
   child.stdout?.setEncoding('utf8')
@@ -188,7 +313,7 @@ function handlePetLine(ctx, runtime, profile, message) {
     return
   }
   if (message?.t === 'open') {
-    openHarness(ctx)
+    openHarness(ctx, runtime)
     return
   }
   if (message?.t === 'balance') {
@@ -479,7 +604,7 @@ function desktopProtocolRegistered() {
   }
 }
 
-function openHarness(ctx) {
+function openHarness(ctx, runtime) {
   const url = (() => {
     try {
       return ctx.get('webApp', false)?.getAdvertisedUrl?.()
@@ -488,10 +613,18 @@ function openHarness(ctx) {
     }
   })()
   const registered = desktopProtocolRegistered()
-  const target = registered ? 'dsh://open' : url
-  if (target === undefined || target === null || target === '') return
+  // The pet does the window work: it is a native process, so it can call
+  // ShellExecuteEx on dsh://open (measured to be the only invocation that reaches the
+  // running desktop instance — `cmd start` and `rundll32 url.dll` both failed here),
+  // and it can restore a minimised window through WM_SYSCOMMAND/SC_RESTORE.
+  // When the protocol is not registered, fall back to opening the web GUI.
+  if (registered) {
+    sendPet(runtime, { t: 'raise' })
+    return
+  }
+  if (url === undefined || url === null || url === '') return
   try {
-    const child = spawn('cmd.exe', ['/c', 'start', '', target], { windowsHide: true, detached: true, stdio: 'ignore' })
+    const child = spawn('cmd.exe', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' })
     child.unref()
   } catch (error) {
     ctx.logger?.warn?.(`[dsh-lite-pet] cannot open the Harness: ${String(error?.message ?? error)}`)
