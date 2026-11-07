@@ -541,6 +541,27 @@ namespace DshLitePet
             if (Trace.Enabled) Trace.Note("protocol: ShellExecuteEx ok=" + ok);
         }
 
+        /// <summary>Guards against starting a second raise while one is still resolving.</summary>
+        private static int _raisePending;
+
+        /// <summary>
+        /// Runs the raise off the message thread. A double click on the pet should not queue
+        /// two searches for the same window.
+        /// </summary>
+        private static void RequestRaise()
+        {
+            if (System.Threading.Interlocked.Exchange(ref _raisePending, 1) != 0) return;
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate(object state)
+            {
+                try { OpenHarness(); }
+                catch (Exception error)
+                {
+                    if (Trace.Enabled) Trace.Note("open: failed " + error.GetType().Name + ": " + error.Message);
+                }
+                finally { System.Threading.Interlocked.Exchange(ref _raisePending, 0); }
+            });
+        }
+
         /// <summary>
         /// Brings the Harness window forward for a click on the pet.
         ///
@@ -766,7 +787,11 @@ namespace DshLitePet
             string type = Json.String(message, "t");
             if (Trace.Enabled) Trace.Note("cmd type=" + type + " text=" + Json.String(message, "text"));
             if (type == "quit") { Quit(); return; }
-            if (type == "raise") { OpenHarness(); return; }
+            // Raising the Harness window is a series of blocking Win32 waits — up to
+            // several seconds when the window has to be found, restored and confirmed.
+            // Running it inline would freeze the animation for that whole time, so it
+            // goes to the thread pool; the pet keeps playing while the shell catches up.
+            if (type == "raise") { RequestRaise(); return; }
             if (type != "state") return;
 
             _mode = Json.String(message, "mode") ?? "idle";

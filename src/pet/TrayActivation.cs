@@ -48,7 +48,7 @@ namespace DshLitePet
             worker.SetApartmentState(System.Threading.ApartmentState.STA);
             worker.IsBackground = true;
             worker.Start();
-            bool finished = worker.Join(5000);
+            bool finished = worker.Join(9000);
             if (Trace.Enabled)
                 Trace.Note("tray: finished=" + finished + " clicked=" + clicked +
                     " failure=" + (failure == null ? "none" : failure.GetType().Name + ": " + failure.Message));
