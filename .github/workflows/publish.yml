@@ -57,6 +57,12 @@ jobs:
       - name: Verify the archive extractor
         run: node tools/zip-selftest.mjs
 
+      # Guards the download itself: the merged trust roots (a local TLS-terminating
+      # accelerator otherwise kills every attempt), redirect handling, truncation
+      # rejection, and the retry-after-failure contract.
+      - name: Verify the ambient download path
+        run: node tools/ambient-selftest.mjs
+
       - name: Publish to npm (OIDC trusted publishing)
         run: npm publish --access public
 

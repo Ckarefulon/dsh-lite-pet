@@ -19,8 +19,10 @@
  */
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import * as tls from 'node:tls'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-lite-pet'
@@ -46,6 +48,9 @@ const AMBIENT_ASSET = 'dsh-lite-pet-media-full.zip'
 const AMBIENT_RELEASE_BASE =
   process.env.DSH_LITE_PET_ASSET_BASE ??
   'https://github.com/Ckarefulon/dsh-lite-pet/releases/latest/download/'
+// A failed download is not permanent — most are a flaky proxy or a dropped
+// connection. Retry on this interval while the pet keeps running.
+const AMBIENT_RETRY_MS = 10 * 60_000
 
 export function apply(ctx, config) {
   const supported = process.platform === 'win32'
@@ -60,7 +65,12 @@ export function apply(ctx, config) {
   }, 'dsh-lite-pet: process lifetime')
 
   // ——— account / window plumbing ————————————————————————————————————————
-  const pushTick = () => pushState(ctx, runtime, profile)
+  const pushTick = () => {
+    pushState(ctx, runtime, profile)
+    // Cheap no-op unless a previous attempt failed and its backoff has elapsed, so a
+    // dropped download recovers on its own instead of waiting for a pet restart.
+    if (runtime.enabled && runtime.pet !== null) void fetchAmbientSet(ctx, runtime, profile.settings)
+  }
   const timer = setInterval(() => {
     try {
       pushTick()
@@ -131,35 +141,151 @@ export function resolveMediaDirForTest(config) {
 }
 
 /**
+ * Trust roots for the animation download: Node's bundled list plus whatever the
+ * machine itself trusts.
+ *
+ * The bundled list alone is not enough on a normal Chinese desktop. GitHub is
+ * routinely fronted by a local accelerator that terminates TLS on 127.0.0.1 and
+ * re-signs the connection with a root that lives in the Windows certificate store.
+ * Node's built-in CAs never contain that root, so `fetch` dies with
+ * UNABLE_TO_VERIFY_LEAF_SIGNATURE before a single byte is requested — measured on
+ * this machine, where the accelerator listens on 127.0.0.1:443 and both browsers
+ * work fine.
+ *
+ * Merged explicitly instead of calling `tls.setDefaultCACertificates`, because that
+ * would change TLS defaults for every other plugin in this process.
+ */
+export function trustRoots() {
+  try {
+    const { getCACertificates } = tls
+    if (typeof getCACertificates !== 'function') return undefined
+    const merged = [...getCACertificates('default')]
+    const seen = new Set(merged)
+    for (const system of getCACertificates('system')) {
+      if (!seen.has(system)) {
+        seen.add(system)
+        merged.push(system)
+      }
+    }
+    return merged
+  } catch {
+    return undefined // fall back to Node's defaults rather than failing the download
+  }
+}
+
+// The HTTPS request function. Swappable so the self-test can drive `transfer` over a
+// fake socket instead of standing up a TLS server, which needs an openssl that a
+// stock Windows box does not have.
+let httpsTransport = httpsRequest
+
+/** Test hook. Pass null to restore the real transport. Not part of the plugin API. */
+export function setTransferForTest(fn) {
+  httpsTransport = fn === null ? httpsRequest : fn
+}
+
+/**
+ * GETs a URL and resolves with the full body, following redirects.
+ *
+ * `node:https` rather than `fetch` because only it accepts a per-request `ca` list;
+ * handing the merged trust roots to `fetch` means mutating the process-wide TLS
+ * defaults, and this download has no business doing that to the rest of the Host.
+ */
+export function transfer(url, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const done = (fn, value) => {
+      if (settled) return
+      settled = true
+      fn(value)
+    }
+    const request = httpsTransport(
+      url,
+      { method: 'GET', ca: trustRoots(), headers: { 'accept': 'application/octet-stream' } },
+      (response) => {
+        const status = response.statusCode ?? 0
+        const location = response.headers.location
+        if (status >= 300 && status < 400 && typeof location === 'string' && redirectsLeft > 0) {
+          response.resume() // drain so the socket is released
+          done(resolve, transfer(new URL(location, url).href, redirectsLeft - 1))
+          return
+        }
+        if (status !== 200) {
+          response.resume()
+          done(reject, new Error(`HTTP ${status}`))
+          return
+        }
+        const chunks = []
+        let received = 0
+        const expected = Number(response.headers['content-length'] ?? 0)
+        response.on('data', (chunk) => {
+          chunks.push(chunk)
+          received += chunk.length
+        })
+        response.on('end', () => {
+          // A truncated archive must not be unpacked onto a good cache.
+          if (expected > 0 && received !== expected) {
+            done(reject, new Error(`truncated download: ${received} of ${expected} bytes`))
+            return
+          }
+          done(resolve, Buffer.concat(chunks))
+        })
+        response.on('error', (error) => done(reject, error))
+      },
+    )
+    request.on('error', (error) => done(reject, error))
+    request.setTimeout(120_000, () => {
+      request.destroy(new Error('timed out'))
+    })
+    request.end()
+  })
+}
+
+/** Test hook for the retry/backoff contract. Not part of the plugin API. */
+export function fetchAmbientSetForTest(ctx, runtime, config) {
+  return fetchAmbientSet(ctx, runtime, config ?? {})
+}
+
+/**
  * Downloads the ambient animation set in the background. Nothing waits on it: the
  * pet keeps playing the core clips and switches over on its next restart.
+ *
+ * A failed attempt is retried later instead of latching until the next restart.
+ * The common failure is a transient one, and latching it is how the pet silently
+ * played the shortened library for a whole session.
  */
 async function fetchAmbientSet(ctx, runtime, config) {
-  if (runtime.ambient.status !== 'absent') return
+  if (runtime.ambient.status === 'downloading' || runtime.ambient.status === 'ready') return
   const cache = ambientCacheDir(config)
   if (hasCatalog(cache)) {
     runtime.ambient.status = 'ready'
     return
   }
+  if (Date.now() < runtime.ambient.retryAt) return
   runtime.ambient.status = 'downloading'
   const url = AMBIENT_RELEASE_BASE + AMBIENT_ASSET
   const staging = cache + '.part'
   try {
     ctx.logger?.info?.(`[dsh-lite-pet] downloading the full animation set from ${url}`)
-    const response = await fetch(url, { redirect: 'follow' })
-    if (!response.ok || response.body === null) throw new Error(`HTTP ${response.status}`)
+    const body = await transfer(url)
     rmSync(staging, { recursive: true, force: true })
     mkdirSync(staging, { recursive: true })
-    await extractZipTo(await response.arrayBuffer(), staging)
+    await extractZipTo(body, staging)
     if (!hasCatalog(staging)) throw new Error('the archive has no index.json')
     rmSync(cache, { recursive: true, force: true })
     renameSync(staging, cache)
     runtime.ambient.status = 'ready'
-    ctx.logger?.info?.('[dsh-lite-pet] the full animation set is ready; it plays from the next restart')
+    ctx.logger?.info?.('[dsh-lite-pet] the full animation set is ready')
+    // The pet read its catalog at startup, so hand it the new one right away
+    // instead of waiting for a Harness restart the user may never do.
+    restartPetForMedia(ctx, runtime, config)
   } catch (error) {
     rmSync(staging, { recursive: true, force: true })
     runtime.ambient.status = 'failed'
-    ctx.logger?.warn?.(`[dsh-lite-pet] cannot fetch the full animation set: ${String(error?.message ?? error)}`)
+    runtime.ambient.retryAt = Date.now() + AMBIENT_RETRY_MS
+    ctx.logger?.warn?.(
+      `[dsh-lite-pet] cannot fetch the full animation set: ${String(error?.message ?? error)}; ` +
+        `the core clips keep playing and the download is retried in ${Math.round(AMBIENT_RETRY_MS / 60_000)} min`,
+    )
   }
 }
 
@@ -255,7 +381,11 @@ function createRuntime() {
     doneText: null,
     doneAt: 0,
     // absent | downloading | ready | failed — the optional full animation set.
-    ambient: { status: 'absent' },
+    // `retryAt` gates the next attempt after a failure.
+    ambient: { status: 'absent', retryAt: 0 },
+    // The directory the running pet was started with, so a completed download can
+    // tell whether the process needs restarting to pick it up.
+    mediaDir: null,
   }
 }
 
@@ -271,6 +401,7 @@ function ensurePet(ctx, runtime, profile) {
   const child = spawn(PET_EXE, ['--media', mediaDir], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
   runtime.pet = child
   runtime.ready = false
+  runtime.mediaDir = mediaDir
   child.stdout?.setEncoding('utf8')
   child.stderr?.setEncoding('utf8')
   child.stdout?.on('data', (chunk) => {
@@ -785,6 +916,7 @@ function stopPet(runtime) {
   const child = runtime.pet
   runtime.pet = null
   runtime.ready = false
+  runtime.mediaDir = null
   if (child === null || child === undefined) return
   try {
     child.stdin.end()
@@ -800,6 +932,22 @@ function stopPet(runtime) {
   }, 1500)
   timer.unref?.()
 }
+
+/**
+ * Brings a running pet onto the media directory it *should* be playing from.
+ *
+ * The pet reads its catalog once at startup, so a download that lands mid-session
+ * would otherwise sit unused until the user happened to restart the Harness. The
+ * exit handler respawns the process, so ending it here is the whole restart.
+ */
+function restartPetForMedia(ctx, runtime, config) {
+  if (runtime.pet === null || runtime.mediaDir === null) return
+  const wanted = activeMediaDir(config)
+  if (wanted === runtime.mediaDir) return
+  ctx.logger?.info?.('[dsh-lite-pet] switching the pet onto the full animation set')
+  stopPet(runtime)
+}
+
 
 
 
