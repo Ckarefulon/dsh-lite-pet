@@ -1,4 +1,4 @@
-﻿// Native popup menu: 动作 ▸ (category ▸ animation), 调整大小 ▸ presets, 查余额, 关闭桌宠.
+// Native popup menu: 动作 ▸ (category ▸ animation), 调整大小 ▸ presets, 查余额, 关闭桌宠.
 using System;
 using System.Collections.Generic;
 
@@ -11,9 +11,10 @@ namespace DshLitePet
         private const int ScaleBase = 10;
         private const int AnimationBase = 100;
 
-        /// <summary>Window scales offered by 调整大小, in menu order.</summary>
-        public static readonly double[] Scales = { 0.75, 1.0, 1.25, 1.5 };
-        private static readonly string[] ScaleLabels = { "小", "标准", "大", "特大" };
+        // Three sizes, anchored on the user's current setting as the middle (中).
+        // 0.75 is what the pet shipped with, so 中 keeps the familiar look.
+        public static readonly double[] Scales = { 0.55, 0.75, 1.0 };
+        private static readonly string[] ScaleLabels = { "小", "中", "大" };
 
         private readonly Catalog _catalog;
         private readonly Dictionary<int, CatalogEntry> _commands = new Dictionary<int, CatalogEntry>();
@@ -60,7 +61,6 @@ namespace DshLitePet
                 Native.AppendMenu(root, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)sizes.ToInt64()), "调整大小");
 
                 Native.AppendMenu(root, Native.MF_SEPARATOR, UIntPtr.Zero, null);
-                Native.AppendMenu(root, Native.MF_STRING | Native.MF_DISABLED, UIntPtr.Zero, "按住宠物可拖动位置，按住气泡上下拖动可调气泡距离");
                 Native.AppendMenu(root, Native.MF_STRING, (UIntPtr)CommandBalance, "查余额");
                 Native.AppendMenu(root, Native.MF_STRING, (UIntPtr)CommandQuit, "关闭桌宠");
 

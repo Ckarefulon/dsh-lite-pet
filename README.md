@@ -18,33 +18,53 @@
 
 ## 环境要求
 
-- Windows 10/11（依赖系统自带的 .NET Framework 4.x 与 Media Foundation，不需要额外安装运行时）。
+- Windows 10/11（依赖系统自带的 .NET Framework 4.x，不需要额外安装运行时）。
 - DSH Desktop：点击桌宠时通过 `dsh://open` 聚焦主窗口；未注册该协议时退化为打开 Web GUI 地址。
 
 ## 安装
 
 在 DSH 的插件管理里安装 `dsh-lite-pet`（或在 profile 里 `dsh plugin install dsh-lite-pet`），然后到 **设置 → 通用 → 桌面桌宠** 打开开关。
 
+第一次打开开关时，插件会在后台从 GitHub Release 拉取**完整动作素材包**（约 280 MB），缓存到 `~/.dsh/dsh-lite-pet-media/`，桌宠下次重启就换用全套 113 段动画。拉取失败不影响使用：包内自带的 21 段核心动画（待机 / 工作四态 / 余额六档 / 点击回应 / 睡觉）已经能完整跑起来，只是少了那些随机小动作。
+
 ## 实现
 
 | 路径 | 作用 |
 | --- | --- |
-| `index.js` | 宿主半边：`session/event` → 桌宠状态机、余额查询、`/api/dsh-lite-pet/state` 与 `/enabled` 两个 JSON 端点 |
+| `index.js` | 宿主半边：`session/event` → 桌宠状态机、余额查询、完整素材包下载与缓存、`/api/dsh-lite-pet/state` 与 `/enabled` 两个 JSON 端点 |
 | `client/index.js` | 浏览器半边：注册 `settings.general.item` 一行开关（唯一程序内入口） |
-| `src/pet/` | 桌宠进程（C#，`csc.exe` 编译）：分层窗口、Media Foundation 解码、合成、气泡、原生菜单 |
-| `tools/build-media.mjs` | WebM → 彩色 H.264 + 灰度 alpha H.264，并生成 `index.json` 目录 |
+| `src/pet/` | 桌宠进程（C#，`csc.exe` 编译）：分层窗口、libwebp 解码、合成、气泡、原生菜单 |
+| `tools/build-media.mjs` | 分类 WebP 素材并生成 `index.json`（`--tier core` 默认，`--tier full` 出全套） |
+| `tools/pack-media.mjs` | 把全套装成 `runtime/dsh-lite-pet-media-full.zip` 作为 Release 资产 |
 | `tools/build-pet.mjs` | 用系统自带 `csc.exe` 编译 `src/pet/*.cs` |
-| `runtime/` | 构建产物（不入库；发布时随 npm 包分发） |
 
-### 素材：动图 WebP，没有再转码
+### 素材：动图 WebP，直接在 libwebp 里解
 
-每段动画就是一个**动画 WebP**（带 alpha，`ffmpeg -c:v libwebp_anim` 或任何 WebP 动画工具都能产出），直接放进 `vendor/webp/`，`node tools/build-media.mjs` 只做分类并生成 `index.json`：不转码、不需要 ffmpeg、不依赖 Media Foundation。运行时装在包内的 `libwebp`（约 390 KB，BSD 许可）逐帧解码，解出来的就是 RGBA，彩色和透明一次到位。
+每段动画就是一个**动画 WebP**（带 alpha），放在 `vendor/webp/`（114 段，由上游 WebM 母版用 `ffmpeg -c:v libwebp_anim` 转出）。`build-media.mjs` 只做分类和生成 `index.json`，运行时用随包的 `libwebp`（约 390 KB，BSD 许可）逐帧解码。
 
-### 资源占用（本机实测，1080p / 125% 缩放）
+解码请求的是 `MODE_bgrA`——libwebp 直接吐出**预乘 BGRA**，正好是分层窗口要的格式，所以渲染路径里没有逐像素预乘；而且对预乘值做插值在数学上才是正确的缩放方式，边缘不会发灰。
 
-- 内存：约 37 MB（只加载当前这一段的 WebP 数据）。
-- CPU：工作状态约 13% 单核；待机更低（素材帧率越低越省）。
-- 磁盘：`runtime/media` 取决于素材编码质量（105 段、640×360、15 fps、q80 约 300 MB；调低质量或帧率会明显变小）。
+### 两档分发
+
+| 档位 | 内容 | 体积 | 分发方式 |
+| --- | --- | --- | --- |
+| core | 21 段（idle / 工作四态 / 余额六档 / 点击五段 / 睡觉三段） | 48 MB | npm 包内 |
+| full | 113 段（再加 87 段随机小动作、5 段碎碎念） | 281 MB | GitHub Release 资产，首次启用时下载缓存 |
+
+### 资源占用（本机实测，1080p / 125% 缩放，0.75× 窗口）
+
+- 内存：约 25–35 MB（只加载当前这一段的 WebP 数据）。
+- CPU：待机约 7.7% 单核，工作状态约 9.1%；每帧解码 2.2 ms、融合渲染约 1.1 ms。
+- 磁盘：核心集 48 MB；全套缓存 281 MB。
+
+### 性能取舍（实测数据）
+
+| 方案 | 素材体积 | 解码 CPU |
+| --- | --- | --- |
+| 动图 WebP（现在） | 281 MB | 3.3% 单核 |
+| H.264 堆叠软解（0.1.4） | 62 MB | 8.6% 单核 |
+
+桌宠是常驻进程，CPU 是无时无刻都在付的成本，磁盘是一次性的下载，所以选了 WebP。GPU 硬解那条路在本机不成立：`IMFDXGIDeviceManager::ResetDevice` 恒返回 `E_HANDLE`（连裸 vtable 调用也一样），详见 `docs/gpu-decode-plan.md`。
 
 ## 开发
 
@@ -53,15 +73,18 @@
 git subtree add --prefix=vendor/upstream https://github.com/PC2005-cloud/dsh-pet.git main --squash
 
 # 2) 构建
-npm run build         # 转码素材 + 编译桌宠
-npm run test:pet      # 冒烟：启动 → ready → 切状态 → quit（需要交互式桌面）
+npm run build            # 核心素材 + 编译桌宠
+npm run build:media:full # 全套素材并打包成 Release 资产
+npm run test:pet         # 冒烟：启动 → ready → 切状态 → quit（需要交互式桌面）
+npm run test:zip         # 校验素材包的写入与解压
 ```
 
 ## 发布
 
-- 打 `v*` tag（或手动触发）运行 `.github/workflows/publish.yml`：装 ffmpeg → 转码 → 编译 → `npm publish` → 创建 GitHub Release。
+- 打 `v*` tag（或手动触发）运行 `.github/workflows/publish.yml`：构建核心素材 → 编译桌宠 → 打全套素材包 → `npm publish` → 创建 GitHub Release 并附上素材包。
 - 发布走 **npm Trusted Publishing（OIDC）**，仓库里不需要任何 token secret。需要在 npmjs.com 上给 `dsh-lite-pet` 配置 Trusted Publisher：仓库 `Ckarefulon/dsh-lite-pet`、工作流文件 `publish.yml`。
 - `.github/workflows/sync-assets.yml` 每天 `git subtree pull` 上游素材，有变更即提交并推送。
+
 
 ## 许可
 

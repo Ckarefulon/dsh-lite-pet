@@ -24,11 +24,32 @@ function findCompiler() {
   return candidates.find((path) => existsSync(path)) ?? null
 }
 
+/**
+ * Resolves a .NET Framework assembly that ships in the GAC. UIAutomationClient is what
+ * makes the tray icon reachable, and it is part of the framework on every Windows 10/11
+ * install, but the reference assemblies are only present with an SDK — so reference the
+ * GAC copy directly, which is also what the loader uses at run time.
+ */
+function findGacAssembly(name) {
+  const windir = process.env.WINDIR || 'C:\\Windows'
+  const root = join(windir, 'Microsoft.NET', 'assembly', 'GAC_MSIL', name)
+  if (!existsSync(root)) return null
+  for (const versionDir of readdirSync(root)) {
+    const candidate = join(root, versionDir, `${name}.dll`)
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
 const csc = findCompiler()
 if (csc === null) {
   console.error('[pet] csc.exe (.NET Framework 4.x) not found — the pet helper only builds on Windows')
   process.exit(1)
 }
+
+const uiaAssemblies = ['UIAutomationClient', 'UIAutomationTypes', 'WindowsBase']
+  .map(findGacAssembly)
+const hasUia = uiaAssemblies.every((path) => path !== null)
 
 mkdirSync(OUT_DIR, { recursive: true })
 const sources = readdirSync(SOURCE_DIR)
@@ -43,8 +64,14 @@ const args = [
   '/optimize+',
   `/out:${OUT}`,
   '/r:System.Drawing.dll',
-  ...sources,
 ]
+if (hasUia) {
+  args.push('/define:HAS_UIA')
+  for (const path of uiaAssemblies) args.push(`/r:${path}`)
+} else {
+  console.log('[pet] UI Automation assemblies not found — the tray-icon route compiles out')
+}
+args.push(...sources)
 console.log(`[pet] ${csc} ${args.join(' ')}`)
 const result = spawnSync(csc, args, { stdio: 'inherit', windowsHide: true })
 if (result.error) {

@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 /**
- * Builds runtime/media from a directory of animated WebP clips.
+ * Builds the animation catalog the pet reads.
  *
- * The pet decodes animated WebP directly with the bundled libwebp (no re-encoding,
- * no Media Foundation, no ffmpeg). This step only classifies the files and writes
- * the catalog the pet reads.
+ * Source of truth is `vendor/webm/`: the upstream VP9 masters with an alpha side
+ * stream (~55 MiB, the only animation data the repository carries). This step
+ * transcodes each clip to an animated WebP and writes index.json. Already-built
+ * WebP files are reused, so a rebuild only pays for what changed.
+ *
+ * The masters are VP9 with `ALPHA_MODE=1`. ffmpeg only exposes that alpha plane
+ * when the libvpx decoder is requested explicitly (`-c:v libvpx-vp9`); without it
+ * the alpha reads back as fully opaque and the pet loses its silhouette.
  *
  * Usage:
- *   node tools/build-media.mjs [--from <webp dir>] [--out <media dir>] [--force]
+ *   node tools/build-media.mjs [--from <webm dir>] [--out <media dir>]
+ *                              [--tier core|full] [--ffmpeg <path>] [--skip-existing]
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,8 +27,23 @@ const arg = (name, fallback) => {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback
 }
 
-const SOURCE = resolve(arg('--from', join(ROOT, 'vendor/webp')))
+const SOURCE = resolve(arg('--from', join(ROOT, 'vendor/webm')))
 const OUT = resolve(arg('--out', join(ROOT, 'runtime/media')))
+
+// Transcode settings. 15 fps is what the pet's playback expects (151 frames over
+// ~10 s), 640x360 is the authored canvas. Do NOT add libwebp's -cr_threshold:
+// conditional replenishment corrupts alpha-carrying animations — it punches white
+// holes through the artwork and turns the silhouette edge into black blocks.
+const FPS = arg('--fps', '15')
+const QUALITY = arg('--quality', '75')
+
+function findFfmpeg() {
+  const explicit = arg('--ffmpeg', process.env.FFMPEG)
+  if (explicit) return explicit
+  const probe = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' })
+  if (probe.status === 0) return 'ffmpeg'
+  return null
+}
 
 // —— upstream grouping (mirrors dsh-pet's assets/config.jsonc) ————————————————
 const WORK = {
@@ -39,6 +61,8 @@ const GROUP_LISTS = {
     '悠闲哼歌', '超大伸懒腰', '原地敲击桌面互动', '原地重力下蹲压缩', '哈欠连天', '原地小憩沉眠',
     '女仆屈膝礼仪', '被吓一跳', '小幅度原地360度旋转展示', '偷吃零食被抓住', '用鲸鱼尾巴拍打地面',
     '打瞌睡被惊醒', '照镜子', '整体换装试色', '轻快记录', '写代码', '摇扇纳凉', '晨间刷牙',
+    // Clips upstream added after the first catalog: they are ordinary ambient actions.
+    '东张西望', '侧身急躁跑', '原地左转奔跑', '原地漂浮踏步', '开心小跑', '螃蟹走路',
   ],
   玩耍: [
     '原地专心玩魔方', '原地蹲下玩玩具汽车', '鲸鱼吐泡泡特效', '原地跳跃抓碎头顶物品', '玩游戏气急败坏',
@@ -71,45 +95,105 @@ for (const [group, names] of Object.entries(GROUP_LISTS)) {
     CLASSIFY.set(name, { group, kind })
   }
 }
-// Extra clips the pet plays when asked (balance check and click feedback).
+// Extra clips the pet plays when asked. Upstream names them by prefix, so match the
+// prefixes rather than listing every file (the set grows upstream).
 const KINDS_BY_NAME = (name) => {
-  if (name.startsWith('查余额')) return { group: '查余额', kind: 'balance' }
-  if (name.startsWith('点击回应') || name.startsWith('点击')) return { group: '点击', kind: 'click' }
+  if (name.startsWith('余额-')) return { group: '余额', kind: 'balance' }
+  if (name.startsWith('点击回应-')) return { group: '点击', kind: 'click' }
+  if (name.startsWith('碎碎念-')) return { group: '碎碎念', kind: 'whisper' }
+  if (name.startsWith('睡觉-')) return { group: '睡觉', kind: 'sleep' }
   return null
 }
 
 const names = readdirSync(SOURCE)
-  .filter((file) => file.toLowerCase().endsWith('.webp'))
+  .filter((file) => file.toLowerCase().endsWith('.webm') || file.toLowerCase().endsWith('.webp'))
   .map((file) => file.slice(0, -5))
   .filter((name) => !SKIP.has(name))
   .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
 
 if (names.length === 0) {
-  console.error(`[media] no .webp files in ${SOURCE} — drop the transcoded clips there first`)
+  console.error(`[media] no .webm/.webp clips in ${SOURCE} — the upstream masters belong there`)
   process.exit(1)
 }
+
+const ffmpeg = findFfmpeg()
+const needsTranscode = names.some((name) => !existsSync(join(SOURCE, `${name}.webp`)))
+if (needsTranscode && ffmpeg === null) {
+  console.error('[media] ffmpeg is required to transcode vendor/webm; install it or pass --ffmpeg <path>')
+  process.exit(1)
+}
+
+/**
+ * Transcodes one WebM master into an animated WebP. Existing output is reused so a
+ * rebuild only pays for clips that changed or are new.
+ */
+function transcode(name, targetPath) {
+  const webm = join(SOURCE, `${name}.webm`)
+  const webp = join(SOURCE, `${name}.webp`)
+  // A pre-made WebP next to the masters wins: no transcode needed.
+  if (existsSync(webp)) {
+    copyFileSync(webp, targetPath)
+    return
+  }
+  if (existsSync(targetPath)) return
+  const result = spawnSync(
+    ffmpeg,
+    [
+      '-v', 'error',
+      '-c:v', 'libvpx-vp9', // exposes the VP9 alpha side stream
+      '-i', webm,
+      '-vf', `fps=${FPS},scale=640:360`,
+      '-c:v', 'libwebp_anim',
+      '-lossless', '0',
+      '-q:v', QUALITY,
+      '-loop', '0',
+      '-an',
+      '-y',
+      targetPath,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (result.status !== 0 || !existsSync(targetPath)) {
+    throw new Error(`ffmpeg failed for ${name}: ${(result.stderr ?? '').trim().split('\n').pop() ?? 'unknown error'}`)
+  }
+}
+
+// Two tiers, because the full set is ~280 MiB and npm packages should stay small:
+//   core — the clips the pet needs to be usable at all (idle, work states, balance,
+//          click, sleep). Shipped inside the npm package.
+//   full — every clip, including the 87 ambient actions. Published as a GitHub
+//          Release asset and cached on the user's machine the first time the switch
+//          is turned on.
+// `--tier full` writes the complete catalog; the default is core.
+const TIER = arg('--tier', 'core')
+const CORE_KINDS = new Set(['idle', 'work-busy', 'work-thinking', 'work-waiting', 'work-done', 'work-error', 'balance', 'click', 'sleep'])
 
 mkdirSync(OUT, { recursive: true })
 const animations = []
 let index = 0
 let bytes = 0
+let skipped = 0
 for (const name of names) {
   const meta = CLASSIFY.get(name) ?? KINDS_BY_NAME(name)
   if (!meta) continue
+  if (TIER === 'core' && !CORE_KINDS.has(meta.kind)) {
+    skipped += 1
+    continue
+  }
   index += 1
   const id = String(index).padStart(3, '0')
   const fileName = `${id}.webp`
-  const sourcePath = join(SOURCE, `${name}.webp`)
   const targetPath = join(OUT, fileName)
-  if (!existsSync(targetPath) || statSync(targetPath).size !== statSync(sourcePath).size) {
-    copyFileSync(sourcePath, targetPath)
-  }
+  transcode(name, targetPath)
   bytes += statSync(targetPath).size
   animations.push({ id, name, group: meta.group, kind: meta.kind, file: fileName })
 }
 
 writeFileSync(
   join(OUT, 'index.json'),
-  JSON.stringify({ version: 3, width: 640, bodyHeight: 360, animations }, null, 2) + '\n',
+  JSON.stringify({ version: 3, tier: TIER, width: 640, bodyHeight: 360, animations }, null, 2) + '\n',
 )
-console.log(`[media] ${animations.length} clips -> ${OUT} (${(bytes / 1048576).toFixed(1)} MiB)`)
+console.log(
+  `[media] tier=${TIER}: ${animations.length} clips -> ${OUT} (${(bytes / 1048576).toFixed(1)} MiB)` +
+    (skipped > 0 ? `; ${skipped} ambient clips left for the release asset` : ''),
+)

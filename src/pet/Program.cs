@@ -1,4 +1,4 @@
-﻿// dsh-lite-pet desktop helper: one layered, click-through window that plays
+// dsh-lite-pet desktop helper: one layered, click-through window that plays
 // H.264 color + alpha tracks through Media Foundation and draws its own bubble.
 using System;
 using System.Collections.Generic;
@@ -41,6 +41,7 @@ namespace DshLitePet
         private static BubbleDot _bubbleDot;
         private static bool _bubbleDirty = true;
         private static long _bubbleHideAt = -1;
+        private static BubbleWindow _bubble;
         private static long _nextActionAt;
         private static string _currentKind = "";
         private static double _scale = 1.0;
@@ -84,7 +85,14 @@ namespace DshLitePet
                 _scale = _settings.Scale;
                 _catalog = Catalog.Load(mediaDir);
                 _canvas = new PetCanvas(_catalog.Width, _catalog.Height);
-                _canvas.BubbleOffsetY = _settings.BubbleOffsetY;
+                _bubble = new BubbleWindow();
+                // A drag used to be able to leave a huge offset behind while the bubble
+                // was clamped back into the pet bitmaps, so the saved value is not
+                // trustworthy on its own: keep the bubble on or near the screen.
+                // Taken as saved: the travel limits depend on where the pet is on
+                // screen, which is not known yet. Update() clamps it once it is.
+                _bubble.OffsetY = _settings.BubbleOffsetY;
+                _bubble.OnOffsetChanged(PersistBubbleOffset);
                 _menu = new PetMenu(_catalog);
                 _ipc = new Ipc();
                 _ipc.Start();
@@ -101,6 +109,7 @@ namespace DshLitePet
             {
                 if (_webp != null) _webp.Dispose();
                 if (_surface != null) _surface.Dispose();
+                if (_bubble != null) _bubble.Dispose();
                 if (_canvas != null) _canvas.Dispose();
                 if (_ipc != null) _ipc.Dispose();
             }
@@ -149,8 +158,32 @@ namespace DshLitePet
             if (_hwnd == IntPtr.Zero) throw new InvalidOperationException("CreateWindowEx failed: " + Marshal.GetLastWin32Error());
             Native.ShowWindow(_hwnd, Native.SW_SHOWNOACTIVATE);
             Native.SetWindowPos(_hwnd, (IntPtr)(-1), 0, 0, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
+            _bubble.Create();
+            PositionBubble();
         }
 
+        /// <summary>
+        /// Reports the pet's screen rectangle to the bubble, which owns all of the
+        /// bubble's geometry. GetWindowRect is authoritative and already in physical
+        /// pixels, whereas _windowX/_windowY are the logical values the window was asked
+        /// to use; under DPI scaling they differ, so they must never be mixed.
+        /// </summary>
+        private static void PositionBubble()
+        {
+            if (_bubble == null || _hwnd == IntPtr.Zero) return;
+            Native.RECT petRect = new Native.RECT();
+            Native.GetWindowRect(_hwnd, ref petRect);
+            _bubble.SetPetRect(petRect);
+            _bubbleDirty = true;
+            SyncBubble();
+        }
+
+        /// <summary>Persists a bubble offset after the user finishes dragging it.</summary>
+        private static void PersistBubbleOffset()
+        {
+            _settings.BubbleOffsetY = _bubble.OffsetY;
+            _settings.Save();
+        }
         /// <summary>Keeps at least a sliver of the window inside the work area (a saved position can go stale).</summary>
         private static void ClampToWorkArea(Native.RECT work)
         {
@@ -190,7 +223,9 @@ namespace DshLitePet
             _settings.Save();
             Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, _windowWidth, _windowHeight,
                 Native.SWP_NOACTIVATE);
-            _bubbleDirty = true;
+            // After the pet is raised, not before: PositionBubble lifts the bubble
+            // above it, and doing this the other way round buries the bubble.
+            PositionBubble();
             Present();
         }
 
@@ -302,17 +337,8 @@ namespace DshLitePet
             int localY = (int)Math.Round(y / _scale);
             Native.POINT cursor;
             Native.GetCursorPos(out cursor);
-            if (_canvas.HitTestBubble(localX, localY))
-            {
-                _dragging = true;
-                _dragPet = false;
-                _dragMoved = false;
-                _dragStartAt = Uptime.ElapsedMilliseconds;
-                _dragStartY = cursor.Y;
-                _dragStartOffset = _canvas.BubbleOffsetY;
-                Native.SetCapture(_hwnd);
-                return;
-            }
+            // The bubble is a separate window with its own mouse handling; a click that
+            // reaches this window can only be a click on the pet itself.
             if (_canvas.HitTest(localX, localY))
             {
                 _dragging = true;
@@ -355,19 +381,10 @@ namespace DshLitePet
                 _windowY = ny;
                 Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, 0, 0,
                     Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+                // The bubble has to follow the pet it belongs to.
+                PositionBubble();
                 return;
             }
-            int delta = (int)Math.Round((cursor.Y - _dragStartY) / _scale);
-            if (Math.Abs(delta) >= DragThreshold) _dragMoved = true;
-            int offset = _dragStartOffset + delta;
-            int min = -(PetCanvas.BubbleArea - 12);
-            int max = PetCanvas.BubbleOverlapLimit;
-            if (offset < min) offset = min;
-            if (offset > max) offset = max;
-            if (offset == _canvas.BubbleOffsetY) return;
-            _canvas.BubbleOffsetY = offset;
-            _bubbleDirty = true;
-            Present();
         }
 
         private static void OnLeftUp(IntPtr lParam)
@@ -385,7 +402,7 @@ namespace DshLitePet
                     }
                     else
                     {
-                        _settings.BubbleOffsetY = _canvas.BubbleOffsetY;
+                        _settings.BubbleOffsetY = _bubble.OffsetY;
                     }
                     _settings.Save();
                     return;
@@ -415,6 +432,156 @@ namespace DshLitePet
             Native.DestroyWindow(_hwnd);
         }
 
+        /// <summary>Keep the EnumWindows thunk alive; a collected delegate crashes the callback.</summary>
+        private static readonly Native.EnumWindowsProc RaiseEnumProc = RaiseEnumCallback;
+        private static IntPtr _raiseTarget;
+        private static int _raiseBest;
+        private static int _raiseSelf;
+
+        private static bool RaiseEnumCallback(IntPtr hwnd, IntPtr lParam)
+        {
+            uint pid;
+            Native.GetWindowThreadProcessId(hwnd, out pid);
+            // Never touch our own windows.
+            if ((int)pid == _raiseSelf) return true;
+            // An owned window is a dialog; the main window has no owner.
+            if (Native.GetWindow(hwnd, Native.GW_OWNER) != IntPtr.Zero) return true;
+            int length = Native.GetWindowTextLength(hwnd);
+            if (length <= 0) return true;
+            var title = new System.Text.StringBuilder(length + 1);
+            Native.GetWindowText(hwnd, title, title.Capacity);
+            string text = title.ToString();
+            // Only the Electron shell itself ends with "DeepSeek Harness". A browser tab
+            // showing this project's page has a title like
+            //   "DSH … — DeepSeek Harness 和另外 2 个页面 - 个人 - Microsoft Edge"
+            // which contains the name but is not the app, so matching on "contains" would
+            // restore the browser instead of the app (observed).
+            if (!text.EndsWith("DeepSeek Harness", StringComparison.Ordinal)) return true;
+            int score = 0;
+            if (text.Contains("\u2014") || text.Contains(" - ")) score += 20;
+            if (Native.IsWindowVisible(hwnd)) score += 10;
+            if (!Native.IsIconic(hwnd)) score += 5;
+            if (score > _raiseBest) { _raiseBest = score; _raiseTarget = hwnd; }
+            return true;
+        }
+
+        /// <summary>Picks the best Harness window, whether it is visible, minimised or hidden.</summary>
+        private static IntPtr FindHarnessWindow()
+        {
+            _raiseTarget = IntPtr.Zero;
+            _raiseBest = -1;
+            _raiseSelf = (int)Native.GetCurrentProcessId();
+            Native.EnumWindows(RaiseEnumProc, IntPtr.Zero);
+            if (Trace.Enabled) Trace.Note("window: target=" + _raiseTarget.ToString("X") + " best=" + _raiseBest);
+            return _raiseTarget;
+        }
+
+        /// <summary>Polls until the predicate holds or the budget is spent.</summary>
+        private static bool WaitUntil(int timeoutMs, Func<bool> predicate)
+        {
+            long deadline = Uptime.ElapsedMilliseconds + timeoutMs;
+            while (Uptime.ElapsedMilliseconds < deadline)
+            {
+                if (predicate()) return true;
+                Thread.Sleep(60);
+            }
+            return predicate();
+        }
+
+        private static bool HarnessIsShown()
+        {
+            IntPtr target = FindHarnessWindow();
+            return target != IntPtr.Zero && Native.IsWindowVisible(target) && !Native.IsIconic(target);
+        }
+
+        /// <summary>Gives the foreground to a window owned by another process.</summary>
+        private static void RaiseForeground(IntPtr target)
+        {
+            // Windows only lets the foreground thread hand focus over, so borrow its
+            // input state for the duration of the SetForegroundWindow call.
+            IntPtr foreground = Native.GetForegroundWindow();
+            uint foregroundPid;
+            uint foregroundThread = Native.GetWindowThreadProcessId(foreground, out foregroundPid);
+            uint selfThread = Native.GetCurrentThreadId();
+            bool attached = foregroundThread != 0 && foregroundThread != selfThread &&
+                            Native.AttachThreadInput(selfThread, foregroundThread, true);
+            try
+            {
+                Native.SetForegroundWindow(target);
+            }
+            finally
+            {
+                if (attached) Native.AttachThreadInput(selfThread, foregroundThread, false);
+            }
+        }
+        /// <summary>
+        /// Asks the desktop shell to bring its own window forward via the `dsh:` protocol.
+        ///
+        /// This has to be ShellExecuteEx. Measured on this machine:
+        ///   cmd /c start "" dsh://open             -> nothing happened
+        ///   rundll32 url.dll,FileProtocolHandler   -> window stayed minimised
+        ///   ShellExecuteEx("dsh://open", nShow 1)  -> the running instance restored it
+        /// The shell's own focusPrimaryWindow() handles both minimised and hidden windows,
+        /// so reaching it is all that is needed.
+        /// </summary>
+        private static void OpenHarnessViaProtocol()
+        {
+            var info = new Native.SHELLEXECUTEINFO
+            {
+                cbSize = Marshal.SizeOf(typeof(Native.SHELLEXECUTEINFO)),
+                fMask = Native.SEE_MASK_NOCLOSEPROCESS,
+                lpVerb = "open",
+                lpFile = "dsh://open",
+                nShow = Native.SW_SHOWNORMAL,
+            };
+            bool ok = false;
+            try { ok = Native.ShellExecuteEx(ref info); }
+            catch (Exception) { ok = false; }
+            if (info.hProcess != IntPtr.Zero) Native.CloseHandle(info.hProcess);
+            if (Trace.Enabled) Trace.Note("protocol: ShellExecuteEx ok=" + ok);
+        }
+
+        /// <summary>
+        /// Brings the Harness window forward for a click on the pet.
+        ///
+        /// The three window states need three different levers:
+        ///   visible   — hand the foreground over;
+        ///   minimised — WM_SYSCOMMAND/SC_RESTORE, the taskbar's own command;
+        ///   hidden    — invoke the tray icon's command, which is what a user click does.
+        /// The hidden case is the interesting one: Electron's window.hide() cannot be undone
+        /// from outside the shell, so asking the shell itself is the only route that works.
+        /// </summary>
+        private static void OpenHarness()
+        {
+            IntPtr target = FindHarnessWindow();
+            if (target != IntPtr.Zero && Native.IsIconic(target))
+            {
+                Native.PostMessage(target, Native.WM_SYSCOMMAND, (IntPtr)Native.SC_RESTORE, IntPtr.Zero);
+                WaitUntil(1200, delegate { return !Native.IsIconic(target); });
+                target = FindHarnessWindow();
+            }
+
+            if (target != IntPtr.Zero && Native.IsWindowVisible(target) && !Native.IsIconic(target))
+            {
+                RaiseForeground(target);
+                if (Trace.Enabled) Trace.Note("open: already shown, foreground raised");
+                return;
+            }
+
+            if (Trace.Enabled) Trace.Note("open: window hidden, invoking the tray icon");
+            bool clicked = TrayActivation.TryClick();
+            if (clicked && WaitUntil(1600, HarnessIsShown))
+            {
+                IntPtr shown = FindHarnessWindow();
+                if (shown != IntPtr.Zero) RaiseForeground(shown);
+                if (Trace.Enabled) Trace.Note("open: restored through the tray icon");
+                return;
+            }
+
+            // Last resort, and the only case left: the tray icon is switched off entirely.
+            if (Trace.Enabled) Trace.Note("open: tray route failed, using dsh://");
+            OpenHarnessViaProtocol();
+        }
         // ——— rendering ————————————————————————————————————————————
 
         private static void Tick()
@@ -426,6 +593,10 @@ namespace DshLitePet
 
             UpdateHitState();
             UpdateDrag();
+
+            // The bubble is its own window: repaint it only when its text, dot or
+            // place changed, so an unchanged frame costs nothing here.
+            if (_bubbleDirty) SyncBubble();
 
             long now = Uptime.ElapsedMilliseconds;
             if (_bubbleHideAt >= 0 && now >= _bubbleHideAt)
@@ -439,16 +610,20 @@ namespace DshLitePet
             if (now >= _frameDue && _webpFrame != null)
             {
                 Present();
+                if (Trace.Enabled) Trace.Frame();
+                long t0 = Trace.Enabled ? Stopwatch.GetTimestamp() : 0;
                 if (!LoadNextFrame())
                 {
                     OnClipEnd(now);
                     return;
                 }
+                if (Trace.Enabled) Trace.Add(Trace.Decode, Stopwatch.GetTimestamp() - t0);
             }
             else if (_bubbleDirty)
             {
                 Present();
             }
+            if (Trace.Enabled) { Trace.TickRun(); Trace.MaybeFlush(); }
         }
 
         private static bool LoadNextFrame()
@@ -466,76 +641,61 @@ namespace DshLitePet
 
         private static void Present()
         {
-            // Recompose from the last decoded frame every time: a bubble-only repaint
-            // must not leave the previous bubble behind.
-            if (_webpFrame != null)
-                _canvas.ComposePet(_webpFrame, _webp.Width, _webp.Height);
-            if (_fadeStart >= 0 && _fadeSnapshot != null)
-            {
-                long elapsed = Uptime.ElapsedMilliseconds - _fadeStart;
-                if (elapsed >= FadeMs)
-                {
-                    _fadeStart = -1;
-                }
-                else
-                {
-                    _canvas.BlendFrom(_fadeSnapshot, elapsed / (double)FadeMs);
-                }
-            }
-            _canvas.DrawBubble(_bubbleText, _bubbleDot);
-            _bubbleDirty = false;
+            long t0 = Trace.Enabled ? Stopwatch.GetTimestamp() : 0;
             if (_scale == 1.0)
             {
+                if (_webpFrame != null)
+                    _canvas.ComposePet(_webpFrame, _webp.Width, _webp.Height);
+                if (Trace.Enabled) { Trace.Add(Trace.Compose, Stopwatch.GetTimestamp() - t0); t0 = Stopwatch.GetTimestamp(); }
+                if (_fadeStart >= 0 && _fadeSnapshot != null)
+                {
+                    long elapsed = Uptime.ElapsedMilliseconds - _fadeStart;
+                    if (elapsed >= FadeMs) _fadeStart = -1;
+                    else _canvas.BlendFrom(_fadeSnapshot, elapsed / (double)FadeMs);
+                }
                 _surface.Upload(_canvas.Pixels);
             }
             else
             {
+                // Fused path: one pass from the decoded frame into the scaled DIB.
                 BuildScaleTables();
-                UploadScaled();
+                if (_webpFrame != null)
+                    _canvas.RenderScaled(_webpFrame, _webp.Width, _webp.Height, _surface.Bits,
+                        _windowWidth, _windowHeight, _scaleSrcX, _scaleFracX, _scaleSrcY, _scaleFracY);
+                if (Trace.Enabled) { Trace.Add(Trace.Compose, Stopwatch.GetTimestamp() - t0); t0 = Stopwatch.GetTimestamp(); }
+                if (_fadeStart >= 0 && _fadeSnapshot != null)
+                {
+                    long elapsed = Uptime.ElapsedMilliseconds - _fadeStart;
+                    if (elapsed >= FadeMs) _fadeStart = -1;
+                    else _canvas.BlendScaledFrom(_fadeSnapshot, elapsed / (double)FadeMs, _surface.Bits, _windowWidth, _windowHeight);
+                }
             }
+            if (Trace.Enabled) { Trace.Add(Trace.Scale, Stopwatch.GetTimestamp() - t0); t0 = Stopwatch.GetTimestamp(); }
             _surface.Present(_hwnd, _windowX, _windowY);
+            if (Trace.Enabled) Trace.Add(Trace.Present, Stopwatch.GetTimestamp() - t0);
         }
 
         /// <summary>
-        /// Bilinear scale straight from the canvas into the layered DIB. GDI+ DrawImage was
-        /// costing more than the video decode itself (~7ms/frame at 0.75×).
+        /// Repaints the bubble window, which lives outside the pet's bitmap and therefore
+        /// costs the pet nothing while there is no text. Returns true when it had to draw.
         /// </summary>
-        private static unsafe void UploadScaled()
+        private static bool SyncBubble()
         {
-            int sw = _canvas.Width;
-            int sh = _canvas.Height;
-            int dw = _windowWidth;
-            int dh = _windowHeight;
-            fixed (byte* p = _canvas.Pixels)
+            if (_bubble == null) return false;
+            string text = _bubbleText;
+            long t0 = Trace.Enabled ? Stopwatch.GetTimestamp() : 0;
+            if (text == null || text.Length == 0)
             {
-                byte* dstBase = (byte*)_surface.Bits;
-                for (int dy = 0; dy < dh; dy++)
-                {
-                    int sy = _scaleSrcY[dy];
-                    int fy = _scaleFracY[dy];
-                    int sy1 = sy + 1 < sh ? sy + 1 : sh - 1;
-                    byte* r0 = p + sy * sw * 4;
-                    byte* r1 = p + sy1 * sw * 4;
-                    byte* drow = dstBase + dy * dw * 4;
-                    for (int dx = 0; dx < dw; dx++)
-                    {
-                        int sx = _scaleSrcX[dx];
-                        int fx = _scaleFracX[dx];
-                        int sx1 = sx + 1 < sw ? sx + 1 : sw - 1;
-                        int i00 = sx * 4;
-                        int i10 = sx1 * 4;
-                        int w00 = (256 - fx) * (256 - fy);
-                        int w10 = fx * (256 - fy);
-                        int w01 = (256 - fx) * fy;
-                        int w11 = fx * fy;
-                        int o = dx * 4;
-                        drow[o] = (byte)((r0[i00] * w00 + r0[i10] * w10 + r1[i00] * w01 + r1[i10] * w11) >> 16);
-                        drow[o + 1] = (byte)((r0[i00 + 1] * w00 + r0[i10 + 1] * w10 + r1[i00 + 1] * w01 + r1[i10 + 1] * w11) >> 16);
-                        drow[o + 2] = (byte)((r0[i00 + 2] * w00 + r0[i10 + 2] * w10 + r1[i00 + 2] * w01 + r1[i10 + 2] * w11) >> 16);
-                        drow[o + 3] = (byte)((r0[i00 + 3] * w00 + r0[i10 + 3] * w10 + r1[i00 + 3] * w01 + r1[i10 + 3] * w11) >> 16);
-                    }
-                }
+                _bubble.Hide();
+                _bubbleDirty = false;
+                return false;
             }
+            // The bubble owns its geometry; the pet only supplies its own rectangle, which
+            // SetPetRect has already been given by PositionBubble.
+            _bubble.Update(text, _bubbleDot);
+            _bubbleDirty = false;
+            if (Trace.Enabled) Trace.Add(Trace.Bubble, Stopwatch.GetTimestamp() - t0);
+            return true;
         }
 
         /// <summary>Source index and 8-bit fraction for every destination column/row (no divisions in the loop).</summary>
@@ -604,7 +764,9 @@ namespace DshLitePet
             catch (Exception) { return; }
 
             string type = Json.String(message, "t");
+            if (Trace.Enabled) Trace.Note("cmd type=" + type + " text=" + Json.String(message, "text"));
             if (type == "quit") { Quit(); return; }
+            if (type == "raise") { OpenHarness(); return; }
             if (type != "state") return;
 
             _mode = Json.String(message, "mode") ?? "idle";
@@ -690,12 +852,23 @@ namespace DshLitePet
             if (_webp != null)
             {
                 if (!force && _webp.Entry == entry && loop && !_oneShot) return;
-                // Cross-fade from the frame that is on screen right now.
-                if (_canvas.Pixels != null)
+                // Cross-fade from the pixels that are on screen right now. The scaled path
+                // renders straight into the DIB, so the snapshot has to come from there.
+                if (_scale == 1.0)
                 {
-                    if (_fadeSnapshot == null || _fadeSnapshot.Length != _canvas.Pixels.Length)
-                        _fadeSnapshot = new byte[_canvas.Pixels.Length];
-                    Buffer.BlockCopy(_canvas.Pixels, 0, _fadeSnapshot, 0, _fadeSnapshot.Length);
+                    if (_canvas.Pixels != null)
+                    {
+                        if (_fadeSnapshot == null || _fadeSnapshot.Length != _canvas.Pixels.Length)
+                            _fadeSnapshot = new byte[_canvas.Pixels.Length];
+                        Buffer.BlockCopy(_canvas.Pixels, 0, _fadeSnapshot, 0, _fadeSnapshot.Length);
+                        _fadeStart = Uptime.ElapsedMilliseconds;
+                    }
+                }
+                else
+                {
+                    int bytes = _windowWidth * _windowHeight * 4;
+                    if (_fadeSnapshot == null || _fadeSnapshot.Length != bytes) _fadeSnapshot = new byte[bytes];
+                    Marshal.Copy(_surface.Bits, _fadeSnapshot, 0, bytes);
                     _fadeStart = Uptime.ElapsedMilliseconds;
                 }
                 _webp.Dispose();
@@ -715,7 +888,7 @@ namespace DshLitePet
                 }
                 if (_webp == null) return;
             }
-            if (_webp.Width != _canvas.Width || _webp.Height != _canvas.VideoHeight)
+            if (_webp.Width != _canvas.Width || _webp.Height != _canvas.Height)
             {
                 // A clip with an unexpected canvas size would skew every pixel; skip it.
                 _webp.Dispose();

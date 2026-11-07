@@ -1,4 +1,4 @@
-﻿// Win32 interop for the desktop pet window. Only what the pet actually uses:
+// Win32 interop for the desktop pet window. Only what the pet actually uses:
 // a layered popup window, GDI memory DC + DIB section, hit testing, and popup menus.
 using System;
 using System.Runtime.InteropServices;
@@ -33,6 +33,11 @@ namespace DshLitePet
         public const int SWP_NOSIZE = 0x0001;
         public const int SWP_NOMOVE = 0x0002;
         public const int SWP_NOACTIVATE = 0x0010;
+        public const int SWP_SHOWWINDOW = 0x0040;
+        public const int SWP_NOZORDER = 0x0004;
+        public const int SWP_FRAMECHANGED = 0x0020;
+        public const int GWL_STYLE = -16;
+        public const int WS_VISIBLE = 0x10000000;
 
         public const uint MF_STRING = 0x00000000;
         public const uint MF_POPUP = 0x00000010;
@@ -212,6 +217,98 @@ namespace DshLitePet
 
         [DllImport("user32.dll")]
         public static extern IntPtr SetCursor(IntPtr cursor);
+
+        // ——— bringing another application's window forward ————————————————
+        // The Harness window belongs to the Electron shell, not to this process, so it
+        // can only be found by enumerating top-level windows and matching owners.
+
+        public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentProcessId();
+
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowTextLength(IntPtr hwnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int maxCount);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetWindow(IntPtr hwnd, int command);
+
+        [DllImport("user32.dll")]
+        public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint attachTo, uint attachFrom,
+            [MarshalAs(UnmanagedType.Bool)] bool attach);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
+
+        // ——— ShellExecute: the only reliable way to fire the dsh: protocol ——————
+        // Measured on this machine: `cmd /c start "" dsh://open` did nothing, and
+        // `rundll32 url.dll,FileProtocolHandler dsh://open` left the window minimised,
+        // while ShellExecuteEx reached the running instance and restored it.
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct SHELLEXECUTEINFO
+        {
+            public int cbSize;
+            public uint fMask;
+            public IntPtr hwnd;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpVerb;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpFile;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpParameters;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpDirectory;
+            public int nShow;
+            public IntPtr hInstApp;
+            public IntPtr lpIDList;
+            [MarshalAs(UnmanagedType.LPWStr)] public string lpClass;
+            public IntPtr hkeyClass;
+            public uint dwHotKey;
+            public IntPtr hIcon;
+            public IntPtr hProcess;
+        }
+
+        public const uint SEE_MASK_NOCLOSEPROCESS = 0x00000040;
+
+        public const int SW_SHOWNORMAL = 1;
+
+        [DllImport("kernel32.dll")]
+        public static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool ShellExecuteEx(ref SHELLEXECUTEINFO info);
+
+        public const uint WM_SYSCOMMAND = 0x0112;
+        public const int SC_RESTORE = 0xF120;
+        public const int SC_MINIMIZE = 0xF020;
+
+        public const int SW_RESTORE = 9;
+        public const int SW_SHOW = 5;
+        public const int GW_OWNER = 4;
+
+        public const int SW_HIDE = 0;
+        public const int WM_MOUSEACTIVATE = 0x0021;
+        public const int MA_NOACTIVATE = 3;
+
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr hwnd, ref RECT rect);
 
         /// <summary>Creates a top-down 32bpp DIB and its memory DC. The bits are BGRA, premultiplied on present.</summary>
         public sealed class LayeredSurface : IDisposable
