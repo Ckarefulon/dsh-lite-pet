@@ -15,7 +15,7 @@
  * download the real release asset through the shipped code path.
  */
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,6 +43,43 @@ if (typeof plugin.trustRoots !== 'function') {
 }
 
 // ——— 2) redirect + truncation through the real transfer() ————————————————
+
+// A real archive built by the shipped packer, reused by the fallback check in
+// section 3b so that "usable" means the extractor actually accepts it.
+const ASSET_SCRATCH = mkdtempSync(join(tmpdir(), 'ambient-asset-'))
+let ASSET = null
+try {
+  const { writeFileSync } = await import('node:fs')
+  const { execFileSync } = await import('node:child_process')
+  mkdirSync(join(ASSET_SCRATCH, 'src'), { recursive: true })
+  writeFileSync(join(ASSET_SCRATCH, 'src', '001.webp'), Buffer.from('RIFF0000WEBPVP8 selftest-clip'))
+  writeFileSync(
+    join(ASSET_SCRATCH, 'src', 'index.json'),
+    JSON.stringify({
+      version: 3,
+      tier: 'full',
+      width: 640,
+      bodyHeight: 360,
+      animations: [{ id: '001', name: 'selftest', group: 'test', kind: 'action', file: '001.webp' }],
+    }),
+  )
+  execFileSync(
+    process.execPath,
+    [
+      join(ROOT, 'tools', 'pack-media.mjs'),
+      '--full',
+      join(ASSET_SCRATCH, 'src'),
+      '--out',
+      join(ASSET_SCRATCH, 'asset.zip'),
+    ],
+    { stdio: 'ignore' },
+  )
+  ASSET = readFileSync(join(ASSET_SCRATCH, 'asset.zip'))
+} catch (error) {
+  failures.push(`could not build a test archive: ${String(error?.message ?? error)}`)
+} finally {
+  rmSync(ASSET_SCRATCH, { recursive: true, force: true })
+}
 
 if (typeof plugin.transfer !== 'function') {
   failures.push('transfer is not exported')
@@ -108,7 +145,7 @@ if (typeof plugin.transfer !== 'function') {
 }
 
 
-// ——— 3) a failed download must be retried ——————————————————————————
+// ——— 3) a failed download must be retried, and must fall back ————————
 
 if (typeof plugin.fetchAmbientSetForTest !== 'function') {
   failures.push('fetchAmbientSetForTest is not exported')
@@ -118,31 +155,72 @@ if (typeof plugin.fetchAmbientSetForTest !== 'function') {
   try {
     process.env.DSH_HOME = scratch
     let attempts = 0
-    plugin.setTransferForTest(() => {
+    const urls = []
+    plugin.setTransferForTest((url) => {
       attempts += 1
+      urls.push(url)
       throw new Error('simulated network failure')
     })
     const runtime = { ambient: { status: 'absent', retryAt: 0 } }
     const ctx = { logger: { info() {}, warn() {} } }
 
     await plugin.fetchAmbientSetForTest(ctx, runtime, {})
-    if (attempts !== 1) failures.push(`expected 1 attempt, saw ${attempts}`)
+    // One attempt per source: `latest` first, then the pinned tag. Both must be
+    // tried before the download is declared failed, because `latest` 404s while a
+    // just-published release is missing its asset.
+    if (attempts !== 2) failures.push(`expected 2 attempts (one per source), saw ${attempts}`)
+    if (urls.length === 2 && urls[0] === urls[1]) failures.push('both attempts used the same URL')
+    if (urls.length === 2 && !/\/latest\//.test(urls[0])) {
+      failures.push(`the first attempt should be the latest release, got ${urls[0]}`)
+    }
     if (runtime.ambient.status !== 'failed') failures.push(`expected status failed, got ${runtime.ambient.status}`)
     if (!(runtime.ambient.retryAt > Date.now())) failures.push('a failure did not schedule a retry')
 
     // Inside the backoff window: no new attempt.
     await plugin.fetchAmbientSetForTest(ctx, runtime, {})
-    if (attempts !== 1) failures.push(`attempted again inside the backoff window (${attempts} total)`)
+    if (attempts !== 2) failures.push(`attempted again inside the backoff window (${attempts} total)`)
 
     // Backoff elapsed: it must try again rather than latch.
     runtime.ambient.retryAt = 0
     await plugin.fetchAmbientSetForTest(ctx, runtime, {})
-    if (attempts !== 2) failures.push(`did not retry after the backoff elapsed (${attempts} attempts)`)
+    if (attempts !== 4) failures.push(`did not retry after the backoff elapsed (${attempts} attempts)`)
 
     if (!existsSync(scratch)) failures.push('scratch home disappeared')
     else if (readdirSync(scratch).some((name) => name.endsWith('.part'))) {
       failures.push('a failed attempt left a .part directory behind')
     }
+
+    // 3b) The fallback must actually be usable on its own: `latest` 404s, the
+    // pinned tag serves a real archive, and the pet ends up with a catalog.
+    let call = 0
+    plugin.setTransferForTest((url, options, onResponse) => {
+      call += 1
+      const emitter = new EventEmitter()
+      emitter.resume = () => {}
+      if (/\/latest\//.test(url)) {
+        emitter.statusCode = 404
+        emitter.headers = {}
+        process.nextTick(() => onResponse(emitter))
+        process.nextTick(() => emitter.emit('end'))
+      } else {
+        emitter.statusCode = 200
+        emitter.headers = { 'content-length': ASSET.length }
+        process.nextTick(() => onResponse(emitter))
+        process.nextTick(() => {
+          emitter.emit('data', ASSET)
+          emitter.emit('end')
+        })
+      }
+      return { on() {}, setTimeout() {}, end() {}, destroy() {} }
+    })
+    const runtime2 = { ambient: { status: 'absent', retryAt: 0 } }
+    await plugin.fetchAmbientSetForTest(ctx, runtime2, {})
+    if (call !== 2) failures.push(`the fallback was not reached (${call} calls)`)
+    if (runtime2.ambient.status !== 'ready') {
+      failures.push(`the fallback did not produce a usable set (status ${runtime2.ambient.status})`)
+    }
+    const cacheDir = join(scratch, 'dsh-lite-pet-media')
+    if (!existsSync(join(cacheDir, 'index.json'))) failures.push('the fallback did not write a cache catalog')
   } finally {
     plugin.setTransferForTest(null)
     if (previousHome === undefined) delete process.env.DSH_HOME

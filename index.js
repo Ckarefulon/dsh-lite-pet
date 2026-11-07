@@ -45,9 +45,17 @@ const MAX_RESTARTS = 3
 // states, balance, click, sleep ≈ 48 MiB). The 92 ambient actions weigh ~230 MiB,
 // so they ship as a GitHub Release asset and are cached on first use.
 const AMBIENT_ASSET = 'dsh-lite-pet-media-full.zip'
+// Where the full animation set is fetched from. `latest` is tried first so the
+// plugin never has to be republished just to refresh its media, but it is not
+// trusted on its own: `releases/latest` resolves to whatever release is newest,
+// and a newest release without the asset answers 404 — which is exactly what a
+// release published while its upload failed looks like. The pinned tag below is
+// a fallback that always had the asset.
+const AMBIENT_PINNED_TAG = 'v0.2.4'
 const AMBIENT_RELEASE_BASE =
   process.env.DSH_LITE_PET_ASSET_BASE ??
   'https://github.com/Ckarefulon/dsh-lite-pet/releases/latest/download/'
+const AMBIENT_FALLBACK_BASE = `https://github.com/Ckarefulon/dsh-lite-pet/releases/download/${AMBIENT_PINNED_TAG}/`
 // A failed download is not permanent — most are a flaky proxy or a dropped
 // connection. Retry on this interval while the pet keeps running.
 const AMBIENT_RETRY_MS = 10 * 60_000
@@ -262,11 +270,28 @@ async function fetchAmbientSet(ctx, runtime, config) {
   }
   if (Date.now() < runtime.ambient.retryAt) return
   runtime.ambient.status = 'downloading'
-  const url = AMBIENT_RELEASE_BASE + AMBIENT_ASSET
   const staging = cache + '.part'
+  const sources = [AMBIENT_RELEASE_BASE]
+  if (process.env.DSH_LITE_PET_ASSET_BASE === undefined) sources.push(AMBIENT_FALLBACK_BASE)
+  let body = null
+  let url = ''
+  let lastError = null
+  for (const base of sources) {
+    url = base + AMBIENT_ASSET
+    try {
+      ctx.logger?.info?.(`[dsh-lite-pet] downloading the full animation set from ${url}`)
+      body = await transfer(url)
+      break
+    } catch (error) {
+      // A 404 on `latest` means the newest release has no asset; the pinned tag
+      // still does. Any other failure is worth trying against the fallback too.
+      lastError = error
+      body = null
+      ctx.logger?.warn?.(`[dsh-lite-pet] ${url} did not work: ${String(error?.message ?? error)}`)
+    }
+  }
   try {
-    ctx.logger?.info?.(`[dsh-lite-pet] downloading the full animation set from ${url}`)
-    const body = await transfer(url)
+    if (body === null) throw lastError ?? new Error('no download source was usable')
     rmSync(staging, { recursive: true, force: true })
     mkdirSync(staging, { recursive: true })
     await extractZipTo(body, staging)
@@ -274,7 +299,7 @@ async function fetchAmbientSet(ctx, runtime, config) {
     rmSync(cache, { recursive: true, force: true })
     renameSync(staging, cache)
     runtime.ambient.status = 'ready'
-    ctx.logger?.info?.('[dsh-lite-pet] the full animation set is ready')
+    ctx.logger?.info?.(`[dsh-lite-pet] the full animation set is ready (from ${url})`)
     // The pet read its catalog at startup, so hand it the new one right away
     // instead of waiting for a Harness restart the user may never do.
     restartPetForMedia(ctx, runtime, config)
