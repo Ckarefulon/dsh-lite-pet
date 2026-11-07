@@ -33,6 +33,9 @@ const ENABLED_ROUTE = '/api/dsh-lite-pet/enabled'
 const PUSH_INTERVAL_MS = 250
 const BUBBLE_TEXT_LIMIT = 120
 const BALANCE_VISIBLE_MS = 9000
+// Backstop for the "completed" bubble. Clicking the pet clears it immediately; this only
+// stops a forgotten message from sitting there for the rest of the session.
+const DONE_VISIBLE_MS = 12 * 60_000
 const RESTART_DELAY_MS = 4000
 const MAX_RESTARTS = 3
 
@@ -313,7 +316,15 @@ function handlePetLine(ctx, runtime, profile, message) {
     return
   }
   if (message?.t === 'open') {
+    // Clicking the pet is the user acknowledging the result: the completed bubble has
+    // done its job once they have gone looking. Clearing it here also means a later
+    // "done" from another session is the only thing that can put it back, instead of
+    // a twelve-minute-old message reappearing after every click.
+    runtime.doneText = null
+    runtime.doneAt = 0
+    runtime.lastSent = ''
     openHarness(ctx, runtime)
+    pushState(ctx, runtime, profile)
     return
   }
   if (message?.t === 'balance') {
@@ -495,17 +506,24 @@ function pushState(ctx, runtime, profile) {
   const now = Date.now()
   let mode = 'idle'
   let text
-  let touched = -1
   let waitingAgent = null
   let runningAgent = null
+  // Each direction compares against its own timestamp. Sharing one accumulator made the
+  // running candidate inherit the waiting candidate's timestamp, so with no session
+  // waiting the accumulator stayed at its initial value and every running session passed
+  // the comparison — the last one inserted into the map won, whatever its actual activity.
+  // The bubble then narrated a session the user had already left.
+  let waitingTouched = -1
+  let runningTouched = -1
   for (const [agentId, state] of runtime.agents) {
     if (now - state.touched > 60_000) continue
-    if (state.waiting > 0 && (waitingAgent === null || state.touched > touched)) {
+    if (state.waiting > 0 && state.touched > waitingTouched) {
       waitingAgent = agentId
-      touched = state.touched
+      waitingTouched = state.touched
     }
-    if (state.running && (runningAgent === null || state.touched > touched)) {
+    if (state.running && state.touched > runningTouched) {
       runningAgent = agentId
+      runningTouched = state.touched
     }
   }
   if (waitingAgent !== null) {
@@ -514,7 +532,9 @@ function pushState(ctx, runtime, profile) {
   } else if (runningAgent !== null) {
     mode = 'working'
     text = bubbleText(runtime.agents.get(runningAgent).text) || '正在工作…'
-  } else if (runtime.doneText !== null && now - runtime.doneAt < 12 * 60_000) {
+  } else if (runtime.doneText !== null && now - runtime.doneAt < DONE_VISIBLE_MS) {
+    // Only when nothing else is going on: a completed session must never take the bubble
+    // away from one that is still working or still waiting for an answer.
     mode = 'done'
     text = runtime.doneText
   }
