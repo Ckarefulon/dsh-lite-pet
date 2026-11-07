@@ -323,8 +323,15 @@ function handlePetLine(ctx, runtime, profile, message) {
     runtime.doneText = null
     runtime.doneAt = 0
     runtime.lastSent = ''
+    // The pet tries first: it can show or restore the window on its own, and only if it
+    // finds the window hidden does it need the shell reached from this process.
     void openHarness(ctx, runtime)
     pushState(ctx, runtime, profile)
+    return
+  }
+  if (message?.t === 'hidden') {
+    // Sent after the pet's own attempt failed, so the cheap routes are already exhausted.
+    void reopenHidden(ctx, runtime)
     return
   }
   if (message?.t === 'balance') {
@@ -526,17 +533,22 @@ function pushState(ctx, runtime, profile) {
       runningTouched = state.touched
     }
   }
+  // Priority, highest first: waiting (yellow) > done (green) > working (plain).
+  //
+  // The green completion state outranks working on purpose. A session that just finished is
+  // the thing the user is waiting to hear about, and it would otherwise be drowned out by any
+  // other session that happens to be busy — which is the common case with several chats open.
+  // It stays below waiting because a pending decision blocks that session and demands
+  // attention.
   if (waitingAgent !== null) {
     mode = 'waiting'
     text = bubbleText(runtime.agents.get(waitingAgent).text) || '需要你确认一下'
+  } else if (runtime.doneText !== null && now - runtime.doneAt < DONE_VISIBLE_MS) {
+    mode = 'done'
+    text = runtime.doneText
   } else if (runningAgent !== null) {
     mode = 'working'
     text = bubbleText(runtime.agents.get(runningAgent).text) || '正在工作…'
-  } else if (runtime.doneText !== null && now - runtime.doneAt < DONE_VISIBLE_MS) {
-    // Only when nothing else is going on: a completed session must never take the bubble
-    // away from one that is still working or still waiting for an answer.
-    mode = 'done'
-    text = runtime.doneText
   }
 
   const payload = JSON.stringify({ t: 'state', mode, text })
@@ -682,36 +694,54 @@ function clickTrayIcon() {
     })
   })
 }
+/**
+ * Reopen the desktop window, doing the cheap thing first.
+ *
+ * The pet can handle the common cases itself: it already enumerates the shell's windows, and
+ * IsWindowVisible / IsIconic / WM_SYSCOMMAND are plain Win32 calls that the sandbox's low
+ * integrity does not restrict. So it is told to try first, and the tray click — which costs
+ * a PowerShell process and about 650 ms, because only a medium-integrity process can read
+ * the taskbar's automation tree — happens only when the pet reports that the window is hidden
+ * and out of its reach.
+ *
+ * In steady state, where the window is already visible or merely minimised, nothing here
+ * runs at all.
+ */
 async function openHarness(ctx, runtime) {
-  // A hidden window can only be reopened through the shell's own focusPrimaryWindow(), and
-  // asking for that means clicking its tray icon. That has to happen here rather than in the
-  // pet, for the integrity reason documented on clickTrayIcon.
-  const clicked = await clickTrayIcon(ctx)
-  if (!clicked && runtime.pet === null) {
-    // No pet to fall back through, and the helper failed: leave the click alone rather than
-    // guessing at a URL that may not belong to this window.
-    return
-  }
-  if (runtime.pet !== null) {
-    // The pet knows how to restore a minimised window and has the dsh:// fallback, and it
-    // also brings the window to the foreground once it is back.
-    sendPet(runtime, { t: 'raise' })
-    return
-  }
-  const url = (() => {
+  if (runtime.pet === null) {
+    // No pet to try through: go straight to the shell's own route.
+    if (await clickTrayIcon()) return
+    const url = (() => {
+      try {
+        return ctx.get('webApp', false)?.getAdvertisedUrl?.()
+      } catch {
+        return undefined
+      }
+    })()
+    if (url === undefined || url === null || url === '') return
     try {
-      return ctx.get('webApp', false)?.getAdvertisedUrl?.()
-    } catch {
-      return undefined
+      const child = spawn('cmd.exe', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' })
+      child.unref()
+    } catch (error) {
+      ctx.logger?.warn?.(`[dsh-lite-pet] cannot open the Harness: ${String(error?.message ?? error)}`)
     }
-  })()
-  if (url === undefined || url === null || url === '') return
-  try {
-    const child = spawn('cmd.exe', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' })
-    child.unref()
-  } catch (error) {
-    ctx.logger?.warn?.(`[dsh-lite-pet] cannot open the Harness: ${String(error?.message ?? error)}`)
+    return
   }
+  sendPet(runtime, { t: 'raise' })
+}
+
+/**
+ * Click the tray icon on the pet's behalf.
+ *
+ * The pet sends this after its own attempt showed that the window is hidden, so no
+ * visibility check is repeated here: the point of the message is that the cheap routes are
+ * exhausted.
+ */
+async function reopenHidden(ctx, runtime) {
+  if (await clickTrayIcon()) return
+  // The shell route is the last thing left; it does not reopen a hidden window on this
+  // machine, but it is harmless and does work in builds whose handler runs synchronously.
+  sendPet(runtime, { t: 'raise' })
 }
 
 // ——— browser routes ————————————————————————————————————————————————————

@@ -422,7 +422,62 @@ namespace DshLitePet
             int y = unchecked((short)(((long)lParam >> 16) & 0xFFFF));
             int localX = (int)Math.Round(x / _scale);
             int localY = (int)Math.Round(y / _scale);
-            if (_canvas.HitTest(localX, localY)) _ipc.Send("{\"t\":\"open\"}");
+            if (!_canvas.HitTest(localX, localY)) return;
+
+            // Deal with the window here if this process can. Everything needed for the
+            // visible and minimised cases is a plain query — EnumWindows, IsWindowVisible,
+            // IsIconic, and WM_SYSCOMMAND to the window — none of which the sandbox's low
+            // integrity restricts. Only a window the shell has hidden has to go back through
+            // the plugin, because reopening it means reaching the taskbar's XAML automation
+            // tree, which low integrity cannot read.
+            RaiseResult raised = TryRaiseLocally();
+            if (Trace.Enabled) Trace.Note("click: local raise " + raised);
+            if (raised != RaiseResult.NeedsShell && raised != RaiseResult.NoWindow) return;
+            // Hidden, or no window to look at: the shell has to be asked, and only the plugin
+            // can reach it. "hidden" tells the plugin that the local attempts are exhausted.
+            _ipc.Send("{\"t\":\"hidden\"}");
+        }
+
+        private enum RaiseResult
+        {
+            /// <summary>No Harness window found at all; the plugin is the only one who can ask.</summary>
+            NoWindow,
+            /// <summary>The window is up and has the foreground.</summary>
+            Shown,
+            /// <summary>The window was minimised and has been restored.</summary>
+            Restored,
+            /// <summary>The window exists but is hidden; only the shell can bring it back.</summary>
+            NeedsShell,
+        }
+
+        /// <summary>
+        /// Brings the Harness window forward when this process is able to. Runs on the
+        /// message thread because it is bounded: a query, at most one posted command, and a
+        /// short wait for the restore. Nothing here can block for seconds the way reaching
+        /// the tray does.
+        /// </summary>
+        private static RaiseResult TryRaiseLocally()
+        {
+            IntPtr target = FindHarnessWindow();
+            if (target == IntPtr.Zero) return RaiseResult.NoWindow;
+
+            bool restored = false;
+            if (Native.IsIconic(target))
+            {
+                // The taskbar's own command. ShowWindow(SW_RESTORE) from a background process
+                // is ignored by this window, but the system menu command is handled by the
+                // window itself.
+                Native.PostMessage(target, Native.WM_SYSCOMMAND, (IntPtr)Native.SC_RESTORE, IntPtr.Zero);
+                WaitUntil(900, delegate { return !Native.IsIconic(target); });
+                target = FindHarnessWindow();
+                if (target == IntPtr.Zero) return RaiseResult.NoWindow;
+                if (Native.IsIconic(target)) return RaiseResult.NeedsShell;
+                restored = true;
+            }
+
+            if (!Native.IsWindowVisible(target)) return RaiseResult.NeedsShell;
+            RaiseForeground(target);
+            return restored ? RaiseResult.Restored : RaiseResult.Shown;
         }
 
         private static void OpenMenu()
@@ -575,8 +630,13 @@ namespace DshLitePet
         private static int _raisePending;
 
         /// <summary>
-        /// Runs the raise off the message thread. A double click on the pet should not queue
-        /// two searches for the same window.
+        /// Runs the raise when the plugin asks for it through the dsh:// path, or when the
+        /// pet itself decided the window is hidden.
+        ///
+        /// The local attempt comes first: if the window turns out to be visible or minimised
+        /// after all, this process can handle it and the shell is never bothered. Only a
+        /// genuinely hidden window reaches further, and reaching the tray from here cannot
+        /// work (low integrity, see TryRaiseLocally), so the plugin is told to click it.
         /// </summary>
         private static void RequestRaise()
         {
@@ -593,47 +653,37 @@ namespace DshLitePet
         }
 
         /// <summary>
-        /// Brings the Harness window forward for a click on the pet.
-        ///
-        /// The three window states need three different levers:
-        ///   visible   — hand the foreground over;
-        ///   minimised — WM_SYSCOMMAND/SC_RESTORE, the taskbar's own command;
-        ///   hidden    — ask the shell itself, either by clicking its tray icon or through
-        ///               the dsh:// protocol. Electron's window.hide() cannot be undone from
-        ///               outside the shell, so only the shell can reopen it.
-        ///
-        /// The hidden case is retried across both routes. A single attempt failed now and
-        /// then, and for a reason that is not ours to control: the shell may take a moment to
-        /// repaint, and the first UI Automation call in a cold process is slow. Since every
-        /// round is bounded, a click that would have missed simply tries the other route.
+        /// The fallback path used once the pet has established that the window is hidden and
+        /// out of its reach. dsh:// is tried first because it costs one ShellExecuteEx; it
+        /// restores a minimised window in builds whose protocol handler runs synchronously,
+        /// though it does not reopen a hidden one on this machine. The tray click, which the
+        /// plugin performs at medium integrity, is the route that actually works for hidden
+        /// windows and is requested by sending the click to the plugin.
         /// </summary>
         private static void OpenHarness()
         {
-            IntPtr target = FindHarnessWindow();
-            if (target != IntPtr.Zero && Native.IsIconic(target))
+            // Cheap first: if the window is already up, or only minimised, this process settles
+            // it without spawning anything. That is the steady state, and it costs one window
+            // query rather than a shell round trip.
+            RaiseResult local = TryRaiseLocally();
+            if (local == RaiseResult.Shown || local == RaiseResult.Restored)
             {
-                Native.PostMessage(target, Native.WM_SYSCOMMAND, (IntPtr)Native.SC_RESTORE, IntPtr.Zero);
-                WaitUntil(1200, delegate { return !Native.IsIconic(target); });
-                target = FindHarnessWindow();
-            }
-
-            if (target != IntPtr.Zero && Native.IsWindowVisible(target) && !Native.IsIconic(target))
-            {
-                RaiseForeground(target);
-                if (Trace.Enabled) Trace.Note("open: already shown, foreground raised");
+                if (Trace.Enabled) Trace.Note("open: settled locally " + local);
                 return;
             }
 
-            // A hidden window can only be reopened by the shell itself, through its own
-            // focusPrimaryWindow(). Asking for that needs UI Automation to reach the tray
-            // icon, and this process cannot: the sandbox starts the pet at low integrity,
-            // where UIPI blocks the taskbar automation tree and only five empty children
-            // are visible. The plugin host runs at medium integrity, so it performs that
-            // click itself and tells the pet nothing more than "the user clicked".
-            //
-            // dsh:// is kept as the fallback: it does not reopen a hidden window on this
-            // machine, but it does restore a minimised one in builds where the protocol
-            // handler runs synchronously.
+            if (local == RaiseResult.NoWindow)
+            {
+                // Nothing to look at. The shell may still be able to create it.
+                OpenHarnessViaProtocol();
+                WaitUntil(OpenWaitMs * 2, HarnessIsShown);
+                return;
+            }
+
+            // Hidden, and this process cannot undo that. dsh:// is tried once because it is
+            // cheap and does restore a minimised window in builds whose handler runs
+            // synchronously; when it does not bring the window back, the plugin's tray click
+            // is the route that works.
             OpenHarnessViaProtocol();
             if (WaitUntil(OpenWaitMs * 2, HarnessIsShown))
             {
@@ -642,12 +692,7 @@ namespace DshLitePet
                 return;
             }
 
-            if (Trace.Enabled)
-            {
-                IntPtr last = FindHarnessWindow();
-                Trace.Note("open: gave up, visible=" +
-                    (last == IntPtr.Zero ? "no window" : Native.IsWindowVisible(last).ToString()));
-            }
+            if (Trace.Enabled) Trace.Note("open: hidden and out of reach locally");
         }
 
 
