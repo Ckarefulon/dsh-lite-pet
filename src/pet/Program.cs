@@ -54,6 +54,14 @@ namespace DshLitePet
         private static BubbleWindow _bubble;
         private static long _nextActionAt;
         private static string _currentKind = "";
+        // Ambient clips are one-shots that end by returning to idle, so the state push
+        // that arrives while one is playing must not cut it off. This remembers that the
+        // clip on screen is an ambient action rather than a reaction to the mode.
+        private static bool _playingAmbient;
+        // A shuffled bag instead of a fresh Rng.Next per pick: every clip comes up once
+        // per cycle instead of leaving repeats to chance.
+        private static readonly List<CatalogEntry> ActionBag = new List<CatalogEntry>();
+        private static int _actionBagIndex;
         private static double _scale = 1.0;
         private static int _windowX;
         private static int _windowY;
@@ -491,7 +499,13 @@ namespace DshLitePet
             if (command == PetMenu.CommandQuit) { Quit(); return; }
             if (command == PetMenu.CommandBalance) { _ipc.Send("{\"t\":\"balance\"}"); return; }
             if (chosenScale > 0) { ApplyScale(chosenScale); return; }
-            if (chosen != null) PlayClip(chosen, false);
+            if (chosen != null)
+            {
+                // A menu pick is a one-shot the user asked for; it must not be mistaken
+                // for an ambient clip, but it does need to survive the next state push.
+                _playingAmbient = true;
+                PlayClip(chosen, false);
+            }
         }
 
         private static void Quit()
@@ -730,6 +744,15 @@ namespace DshLitePet
 
             if (_webp == null) { PlayKind("idle", true, 0); return; }
 
+            // Ambient playback is driven from the tick, not from the end of the idle loop.
+            // Waiting for an idle loop to finish meant the grace period was measured in
+            // whole loop lengths, so the pet sat on the idle clip far longer than intended.
+            if (_mode == "idle" && !_playingAmbient && _currentKind == "idle" && now >= _nextActionAt)
+            {
+                PlayRandomAction();
+                _nextActionAt = now + 20000 + Rng.Next(25000);
+            }
+
             if (now >= _frameDue && _webpFrame != null)
             {
                 Present();
@@ -860,6 +883,8 @@ namespace DshLitePet
         {
             if (_oneShot || !_webp.Entry.IsLoopingKind())
             {
+                // Whatever just finished, the screen is no longer showing an ambient clip.
+                _playingAmbient = false;
                 if (_mode == "working") { PlayKind("work-busy", true, 0); return; }
                 if (_mode == "waiting") { PlayKind("work-waiting", true, 0); return; }
                 PlayKind("idle", true, 0);
@@ -872,11 +897,6 @@ namespace DshLitePet
             {
                 PlayKind("idle", true, 0);
                 return;
-            }
-            if (_currentKind == "idle" && now >= _nextActionAt)
-            {
-                PlayRandomAction();
-                _nextActionAt = now + 20000 + Rng.Next(25000);
             }
         }
 
@@ -904,13 +924,19 @@ namespace DshLitePet
             {
                 _bubbleHideAt = -1;
                 SetBubble(null, BubbleDot.None);
-                if (_currentKind != "idle") PlayKind("idle", true, 0);
+                // The host pushes state every 250 ms, so forcing idle whenever the current
+                // clip is not idle would restart the idle loop four times a second and cut
+                // every ambient action off the moment it began. An ambient action is
+                // allowed to finish; it returns to idle by itself in OnClipEnd.
+                if (_currentKind != "idle" && !_playingAmbient) PlayKind("idle", true, 0);
                 return;
             }
             if (_mode == "working")
             {
                 _bubbleHideAt = -1;
                 SetBubble(text, BubbleDot.None);
+                // Work always outranks an ambient clip: the user needs to see the state.
+                _playingAmbient = false;
                 if (_currentKind != "work-busy") PlayKind("work-busy", true, 0);
                 return;
             }
@@ -918,6 +944,7 @@ namespace DshLitePet
             {
                 _bubbleHideAt = -1;
                 SetBubble(text, BubbleDot.Waiting);
+                _playingAmbient = false;
                 if (_currentKind != "work-waiting") PlayKind("work-waiting", true, 0);
                 return;
             }
@@ -925,11 +952,13 @@ namespace DshLitePet
             {
                 _bubbleHideAt = -1;
                 SetBubble(text, BubbleDot.Done);
+                _playingAmbient = false;
                 if (_currentKind != "work-done") PlayKind("work-done", false, 0);
                 return;
             }
             if (_mode == "balance")
             {
+                _playingAmbient = false;
                 SetBubble(text, BubbleDot.None);
                 _bubbleHideAt = Uptime.ElapsedMilliseconds + 9000;
                 PlayKind("balance", false, (int)level);
@@ -971,7 +1000,34 @@ namespace DshLitePet
             foreach (string kind in new[] { "action", "click", "whisper", "balance" })
                 pool.AddRange(_catalog.ByKind(kind));
             if (pool.Count == 0) return;
-            PlayClip(pool[Rng.Next(pool.Count)], false);
+            // Refill the bag when it empties, and whenever the catalog changed underneath
+            // us (a different media tier), so a stale bag never indexes past the end.
+            if (_actionBagIndex >= ActionBag.Count || ActionBag.Count != pool.Count)
+            {
+                ActionBag.Clear();
+                ActionBag.AddRange(pool);
+                _actionBagIndex = 0;
+                // Fisher-Yates: every clip is guaranteed to appear once per cycle, and no
+                // clip can repeat until all the others have played. Redrawing a random
+                // index each time is what made the short, early clips dominate.
+                for (int i = ActionBag.Count - 1; i > 0; i--)
+                {
+                    int j = Rng.Next(i + 1);
+                    CatalogEntry swap = ActionBag[i];
+                    ActionBag[i] = ActionBag[j];
+                    ActionBag[j] = swap;
+                }
+                // Avoid replaying the clip that just finished at the head of a new cycle.
+                if (_webp != null && ActionBag[0] == _webp.Entry && ActionBag.Count > 1)
+                {
+                    CatalogEntry swap = ActionBag[0];
+                    ActionBag[0] = ActionBag[ActionBag.Count - 1];
+                    ActionBag[ActionBag.Count - 1] = swap;
+                }
+            }
+            CatalogEntry next = ActionBag[_actionBagIndex++];
+            _playingAmbient = true;
+            PlayClip(next, false);
         }
 
         private static void PlayClip(CatalogEntry entry, bool loop, bool force = false)

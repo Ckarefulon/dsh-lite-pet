@@ -63,6 +63,11 @@ jobs:
       - name: Verify the ambient download path
         run: node tools/ambient-selftest.mjs
 
+      # Guards unique menu command ids (every group's first item used to share id 100,
+      # so the wrong clip played) and the shuffled ambient bag.
+      - name: Verify the playback contract
+        run: node tools/playback-selftest.mjs
+
       # The release asset goes up BEFORE the npm publish. It is what every new install
       # downloads on first run, so it must not be hostage to a flaky registry call:
       # when npm failed, this step never ran and the tag shipped with no asset at all.

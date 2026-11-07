@@ -33,18 +33,22 @@ namespace DshLitePet
             var groups = new List<IntPtr>();
             try
             {
+                // Command ids must be unique across the WHOLE menu, not per submenu.
+                // Win32 hands back one integer, so a per-group index made every group's
+                // first entry id 100 and every group's second id 101; the dictionary
+                // kept only the last group's entry and the wrong clip played.
+                int nextCommand = AnimationBase;
                 IntPtr actions = Native.CreatePopupMenu();
                 groups.Add(actions);
                 foreach (string group in _catalog.Groups())
                 {
                     IntPtr sub = Native.CreatePopupMenu();
                     groups.Add(sub);
-                    int index = 0;
                     foreach (CatalogEntry entry in _catalog.ByGroup(group))
                     {
-                        Native.AppendMenu(sub, Native.MF_STRING, (UIntPtr)(AnimationBase + index), entry.Name);
-                        _commands[AnimationBase + index] = entry;
-                        index++;
+                        int itemCommand = nextCommand++;
+                        Native.AppendMenu(sub, Native.MF_STRING, (UIntPtr)itemCommand, entry.Name);
+                        _commands[itemCommand] = entry;
                     }
                     Native.AppendMenu(actions, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)sub.ToInt64()), group);
                 }
