@@ -16,6 +16,16 @@ namespace DshLitePet
         private const int TimerId = 1;
         private const int TimerPeriodMs = 12;
         private const int WindowMargin = 24;
+        /// <summary>
+        /// Retry budget for reopening a hidden Harness window. Measured behaviour is
+        /// inconsistent — the shell sometimes repaints within a few hundred milliseconds and
+        /// sometimes takes seconds, and the first UI Automation call in a cold process is
+        /// slow — so the two routes alternate and the click is only given up on after both
+        /// have been tried twice. Every round is bounded, and the whole sequence runs off
+        /// the message thread, so a slow window never stalls the pet.
+        /// </summary>
+        private const int OpenRounds = 4;
+        private const int OpenWaitMs = 1500;
         private const int DragThreshold = 3;
         private const string WindowClass = "DshLitePetWindow";
 
@@ -488,10 +498,30 @@ namespace DshLitePet
             return predicate();
         }
 
+        /// <summary>
+        /// True when any Harness window is up. Deliberately not the scored best window:
+        /// during a restore the enumeration can momentarily rank a different instance first,
+        /// and "is the app back on screen" is the question that matters here.
+        /// </summary>
         private static bool HarnessIsShown()
         {
-            IntPtr target = FindHarnessWindow();
-            return target != IntPtr.Zero && Native.IsWindowVisible(target) && !Native.IsIconic(target);
+            _shownCount = 0;
+            Native.EnumWindows(ShownEnumProc, IntPtr.Zero);
+            return _shownCount > 0;
+        }
+
+        private static readonly Native.EnumWindowsProc ShownEnumProc = ShownEnumCallback;
+        private static int _shownCount;
+
+        private static bool ShownEnumCallback(IntPtr hwnd, IntPtr lParam)
+        {
+            int length = Native.GetWindowTextLength(hwnd);
+            if (length <= 0) return true;
+            var title = new System.Text.StringBuilder(length + 1);
+            Native.GetWindowText(hwnd, title, title.Capacity);
+            if (!title.ToString().EndsWith("DeepSeek Harness", StringComparison.Ordinal)) return true;
+            if (Native.IsWindowVisible(hwnd) && !Native.IsIconic(hwnd)) _shownCount++;
+            return true;
         }
 
         /// <summary>Gives the foreground to a window owned by another process.</summary>
@@ -568,9 +598,14 @@ namespace DshLitePet
         /// The three window states need three different levers:
         ///   visible   — hand the foreground over;
         ///   minimised — WM_SYSCOMMAND/SC_RESTORE, the taskbar's own command;
-        ///   hidden    — invoke the tray icon's command, which is what a user click does.
-        /// The hidden case is the interesting one: Electron's window.hide() cannot be undone
-        /// from outside the shell, so asking the shell itself is the only route that works.
+        ///   hidden    — ask the shell itself, either by clicking its tray icon or through
+        ///               the dsh:// protocol. Electron's window.hide() cannot be undone from
+        ///               outside the shell, so only the shell can reopen it.
+        ///
+        /// The hidden case is retried across both routes. A single attempt failed now and
+        /// then, and for a reason that is not ours to control: the shell may take a moment to
+        /// repaint, and the first UI Automation call in a cold process is slow. Since every
+        /// round is bounded, a click that would have missed simply tries the other route.
         /// </summary>
         private static void OpenHarness()
         {
@@ -589,19 +624,38 @@ namespace DshLitePet
                 return;
             }
 
-            if (Trace.Enabled) Trace.Note("open: window hidden, invoking the tray icon");
-            bool clicked = TrayActivation.TryClick();
-            if (clicked && WaitUntil(1600, HarnessIsShown))
+            // A hidden window can only be reopened by the shell itself, through its own
+            // focusPrimaryWindow(). Asking for that needs UI Automation to reach the tray
+            // icon, and this process cannot: the sandbox starts the pet at low integrity,
+            // where UIPI blocks the taskbar automation tree and only five empty children
+            // are visible. The plugin host runs at medium integrity, so it performs that
+            // click itself and tells the pet nothing more than "the user clicked".
+            //
+            // dsh:// is kept as the fallback: it does not reopen a hidden window on this
+            // machine, but it does restore a minimised one in builds where the protocol
+            // handler runs synchronously.
+            OpenHarnessViaProtocol();
+            if (WaitUntil(OpenWaitMs * 2, HarnessIsShown))
             {
-                IntPtr shown = FindHarnessWindow();
-                if (shown != IntPtr.Zero) RaiseForeground(shown);
-                if (Trace.Enabled) Trace.Note("open: restored through the tray icon");
+                ShowHarnessFront();
+                if (Trace.Enabled) Trace.Note("open: restored via dsh://");
                 return;
             }
 
-            // Last resort, and the only case left: the tray icon is switched off entirely.
-            if (Trace.Enabled) Trace.Note("open: tray route failed, using dsh://");
-            OpenHarnessViaProtocol();
+            if (Trace.Enabled)
+            {
+                IntPtr last = FindHarnessWindow();
+                Trace.Note("open: gave up, visible=" +
+                    (last == IntPtr.Zero ? "no window" : Native.IsWindowVisible(last).ToString()));
+            }
+        }
+
+
+        /// <summary>Brings the best Harness window forward once it is known to exist.</summary>
+        private static void ShowHarnessFront()
+        {
+            IntPtr shown = FindHarnessWindow();
+            if (shown != IntPtr.Zero) RaiseForeground(shown);
         }
         // ——— rendering ————————————————————————————————————————————
 

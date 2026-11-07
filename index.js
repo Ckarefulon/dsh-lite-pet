@@ -323,7 +323,7 @@ function handlePetLine(ctx, runtime, profile, message) {
     runtime.doneText = null
     runtime.doneAt = 0
     runtime.lastSent = ''
-    openHarness(ctx, runtime)
+    void openHarness(ctx, runtime)
     pushState(ctx, runtime, profile)
     return
   }
@@ -599,32 +599,105 @@ async function sendBalance(ctx, runtime, profile) {
   sendPet(runtime, { t: 'state', mode: 'balance', text, level })
 }
 
-// ——— open the Harness window ——————————————————————————————————————————
+// ——— reopen the desktop window ————————————————————————————————————————
 
-let protocolChecked
-function desktopProtocolRegistered() {
-  if (protocolChecked !== undefined) return protocolChecked
-  try {
-    const probe = spawn('reg.exe', ['query', 'HKCU\\Software\\Classes\\dsh', '/ve'], { windowsHide: true })
-    let out = ''
-    probe.stdout.setEncoding('utf8')
-    probe.stdout.on('data', (chunk) => {
-      out += chunk
-    })
-    probe.on('close', () => {
-      protocolChecked = out.includes('URL:dsh')
-    })
-    probe.on('error', () => {
-      protocolChecked = false
-    })
-    return true // optimistic for the first click; the probe settles quickly
-  } catch {
-    protocolChecked = false
-    return false
+// Ask the desktop shell to show its window by clicking its own tray icon.
+//
+// This runs in the plugin process, not in the pet, and that is the whole point. The
+// sandbox starts the pet at low integrity; a low-integrity process is blocked by UIPI
+// from reading the taskbar's XAML automation tree, so it sees five empty children with
+// no tray buttons and every attempt from there fails silently. The plugin host runs at
+// medium integrity, where the same query returns all thirty-one elements and the icon
+// is invocable. Measured on this machine, both ways.
+//
+// PowerShell is used as the automation host because it ships with Windows, inherits
+// this process's integrity, and keeps the plugin free of a compiled helper that would
+// have to be built and shipped alongside it.
+const TRAY_CLICK_SCRIPT = `
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$AE = [System.Windows.Automation.AutomationElement]
+$cond = New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'Shell_TrayWnd')
+$bar = $AE::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
+if (-not $bar) { exit 2 }
+$all = $bar.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+foreach ($e in $all) {
+  try { $cls = $e.Current.ClassName } catch { continue }
+  if ($cls -notlike 'SystemTray.*') { continue }
+  try { $nm = $e.Current.Name } catch { continue }
+  if ($nm.Trim() -like 'DeepSeek Harness*') {
+    $inv = $e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $inv.Invoke()
+    exit 0
   }
 }
+exit 1
+`
 
-function openHarness(ctx, runtime) {
+function clickTrayIcon() {
+  return new Promise((resolve) => {
+    const powershell = join(
+      process.env.SystemRoot ?? 'C:\\Windows',
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    )
+    if (!existsSync(powershell)) {
+      resolve(false)
+      return
+    }
+    let child
+    try {
+      child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-Command', TRAY_CLICK_SCRIPT], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+    } catch {
+      resolve(false)
+      return
+    }
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill()
+      } catch {
+        /* already gone */
+      }
+      finish(false)
+    }, 6000)
+    timer.unref?.()
+    child.on('error', () => {
+      clearTimeout(timer)
+      finish(false)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      finish(code === 0)
+    })
+  })
+}
+async function openHarness(ctx, runtime) {
+  // A hidden window can only be reopened through the shell's own focusPrimaryWindow(), and
+  // asking for that means clicking its tray icon. That has to happen here rather than in the
+  // pet, for the integrity reason documented on clickTrayIcon.
+  const clicked = await clickTrayIcon(ctx)
+  if (!clicked && runtime.pet === null) {
+    // No pet to fall back through, and the helper failed: leave the click alone rather than
+    // guessing at a URL that may not belong to this window.
+    return
+  }
+  if (runtime.pet !== null) {
+    // The pet knows how to restore a minimised window and has the dsh:// fallback, and it
+    // also brings the window to the foreground once it is back.
+    sendPet(runtime, { t: 'raise' })
+    return
+  }
   const url = (() => {
     try {
       return ctx.get('webApp', false)?.getAdvertisedUrl?.()
@@ -632,16 +705,6 @@ function openHarness(ctx, runtime) {
       return undefined
     }
   })()
-  const registered = desktopProtocolRegistered()
-  // The pet does the window work: it is a native process, so it can call
-  // ShellExecuteEx on dsh://open (measured to be the only invocation that reaches the
-  // running desktop instance — `cmd start` and `rundll32 url.dll` both failed here),
-  // and it can restore a minimised window through WM_SYSCOMMAND/SC_RESTORE.
-  // When the protocol is not registered, fall back to opening the web GUI.
-  if (registered) {
-    sendPet(runtime, { t: 'raise' })
-    return
-  }
   if (url === undefined || url === null || url === '') return
   try {
     const child = spawn('cmd.exe', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' })
