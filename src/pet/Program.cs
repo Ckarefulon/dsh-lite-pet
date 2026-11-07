@@ -432,10 +432,13 @@ namespace DshLitePet
             // tree, which low integrity cannot read.
             RaiseResult raised = TryRaiseLocally();
             if (Trace.Enabled) Trace.Note("click: local raise " + raised);
-            if (raised != RaiseResult.NeedsShell && raised != RaiseResult.NoWindow) return;
-            // Hidden, or no window to look at: the shell has to be asked, and only the plugin
-            // can reach it. "hidden" tells the plugin that the local attempts are exhausted.
-            _ipc.Send("{\"t\":\"hidden\"}");
+
+            // The plugin always hears about the click: it is what clears the "done" bubble,
+            // and that must happen whether or not this process could handle the window. The
+            // "shell" flag is what asks for the extra work, so the tray click only happens
+            // when the window really is out of reach here.
+            bool needShell = raised == RaiseResult.NeedsShell || raised == RaiseResult.NoWindow;
+            _ipc.Send(needShell ? "{\"t\":\"open\",\"shell\":1}" : "{\"t\":\"open\"}");
         }
 
         private enum RaiseResult

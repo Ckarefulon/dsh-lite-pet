@@ -317,21 +317,16 @@ function handlePetLine(ctx, runtime, profile, message) {
   }
   if (message?.t === 'open') {
     // Clicking the pet is the user acknowledging the result: the completed bubble has
-    // done its job once they have gone looking. Clearing it here also means a later
-    // "done" from another session is the only thing that can put it back, instead of
-    // a twelve-minute-old message reappearing after every click.
+    // done its job once they have gone looking. This runs for every click, whether or not
+    // the pet could deal with the window, because clearing the bubble is about the click
+    // and not about the window.
     runtime.doneText = null
     runtime.doneAt = 0
     runtime.lastSent = ''
-    // The pet tries first: it can show or restore the window on its own, and only if it
-    // finds the window hidden does it need the shell reached from this process.
-    void openHarness(ctx, runtime)
+    // `shell` is set only when the pet's own attempt established that the window is hidden
+    // and out of its reach. Without it the click needs nothing from this process.
+    if (message.shell === 1 || message.shell === true) void reopenHidden(ctx, runtime)
     pushState(ctx, runtime, profile)
-    return
-  }
-  if (message?.t === 'hidden') {
-    // Sent after the pet's own attempt failed, so the cheap routes are already exhausted.
-    void reopenHidden(ctx, runtime)
     return
   }
   if (message?.t === 'balance') {
@@ -694,54 +689,23 @@ function clickTrayIcon() {
     })
   })
 }
-/**
- * Reopen the desktop window, doing the cheap thing first.
- *
- * The pet can handle the common cases itself: it already enumerates the shell's windows, and
- * IsWindowVisible / IsIconic / WM_SYSCOMMAND are plain Win32 calls that the sandbox's low
- * integrity does not restrict. So it is told to try first, and the tray click — which costs
- * a PowerShell process and about 650 ms, because only a medium-integrity process can read
- * the taskbar's automation tree — happens only when the pet reports that the window is hidden
- * and out of its reach.
- *
- * In steady state, where the window is already visible or merely minimised, nothing here
- * runs at all.
- */
-async function openHarness(ctx, runtime) {
-  if (runtime.pet === null) {
-    // No pet to try through: go straight to the shell's own route.
-    if (await clickTrayIcon()) return
-    const url = (() => {
-      try {
-        return ctx.get('webApp', false)?.getAdvertisedUrl?.()
-      } catch {
-        return undefined
-      }
-    })()
-    if (url === undefined || url === null || url === '') return
-    try {
-      const child = spawn('cmd.exe', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' })
-      child.unref()
-    } catch (error) {
-      ctx.logger?.warn?.(`[dsh-lite-pet] cannot open the Harness: ${String(error?.message ?? error)}`)
-    }
-    return
-  }
-  sendPet(runtime, { t: 'raise' })
-}
 
 /**
  * Click the tray icon on the pet's behalf.
  *
- * The pet sends this after its own attempt showed that the window is hidden, so no
- * visibility check is repeated here: the point of the message is that the cheap routes are
- * exhausted.
+ * Reached only when the pet has reported that the window is hidden and out of its reach, so
+ * no visibility check is repeated here: the point of that message is that the cheap routes are
+ * already exhausted.
+ *
+ * There is deliberately no second fallback after this. Asking the pet to try again would send
+ * it back through the same "hidden" decision and straight into another tray click, which is a
+ * loop that never converges.
  */
 async function reopenHidden(ctx, runtime) {
-  if (await clickTrayIcon()) return
-  // The shell route is the last thing left; it does not reopen a hidden window on this
-  // machine, but it is harmless and does work in builds whose handler runs synchronously.
-  sendPet(runtime, { t: 'raise' })
+  const clicked = await clickTrayIcon()
+  if (!clicked) {
+    ctx.logger?.warn?.('[dsh-lite-pet] the shell did not accept the tray click; the window may stay hidden')
+  }
 }
 
 // ——— browser routes ————————————————————————————————————————————————————
