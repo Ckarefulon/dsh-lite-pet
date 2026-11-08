@@ -747,10 +747,15 @@ namespace DshLitePet
             // Ambient playback is driven from the tick, not from the end of the idle loop.
             // Waiting for an idle loop to finish meant the grace period was measured in
             // whole loop lengths, so the pet sat on the idle clip far longer than intended.
+            //
+            // The gap is short on purpose. Clips measure 5-10 s, and a 20-45 s gap left the
+            // idle clip on screen for roughly three quarters of the time — the pet read as
+            // "always idle" even though the bag was being drawn from. Idle is now a short
+            // breath between ambient clips, which is what "待机就是随机播放" means.
             if (_mode == "idle" && !_playingAmbient && _currentKind == "idle" && now >= _nextActionAt)
             {
                 PlayRandomAction();
-                _nextActionAt = now + 20000 + Rng.Next(25000);
+                _nextActionAt = now + AmbientGapMs();
             }
 
             if (now >= _frameDue && _webpFrame != null)
@@ -992,6 +997,15 @@ namespace DshLitePet
                 entry = _catalog.Animations[0];
             }
             PlayClip(entry, loop, force);
+        }
+
+        /// <summary>
+        /// The pause between ambient clips. Short enough that the pet visibly cycles through
+        /// its library, long enough that the cuts do not feel frantic.
+        /// </summary>
+        private static long AmbientGapMs()
+        {
+            return 2500 + Rng.Next(3500);
         }
 
         private static void PlayRandomAction()

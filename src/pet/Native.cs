@@ -25,6 +25,7 @@ namespace DshLitePet
         public const int WM_LBUTTONUP = 0x0202;
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_TIMER = 0x0113;
+        public const int WM_NULL = 0x0000;
         public const int WM_SETCURSOR = 0x0020;
         public const int WM_CAPTURECHANGED = 0x0215;
         public const int WM_DESTROY = 0x0002;

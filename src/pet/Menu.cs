@@ -70,7 +70,15 @@ namespace DshLitePet
 
                 Native.POINT point;
                 Native.GetCursorPos(out point);
-                Native.SetForegroundWindow(hwnd);
+                // The pet is WS_EX_NOACTIVATE and must stay that way: taking the foreground
+                // here pulled focus out of whatever the user was typing in, which is what
+                // "右键时抢焦点了" was.
+                //
+                // Win32 wants the owning window to be foreground so the menu dismisses when
+                // the user clicks elsewhere. Posting WM_NULL afterwards is the accepted way to
+                // satisfy that requirement without activating anything — it makes the shell
+                // treat this thread as the menu owner for the duration, and nothing is raised.
+                Native.PostMessage(hwnd, Native.WM_NULL, IntPtr.Zero, IntPtr.Zero);
                 int command = Native.TrackPopupMenuEx(
                     root,
                     Native.TPM_RIGHTBUTTON | Native.TPM_RETURNCMD | Native.TPM_NONOTIFY,

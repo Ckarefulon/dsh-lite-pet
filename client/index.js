@@ -1,5 +1,13 @@
-// dsh-lite-pet — browser half. Adds exactly one switch row to 设置 → 通用; the
-// row drives the Host's `/api/dsh-lite-pet` endpoints, nothing else is registered.
+// dsh-lite-pet — browser half.
+//
+// There is deliberately NO settings row. The pet's only in-app control is one icon in
+// the sidebar workspace header, and that icon IS the switch: click to turn the pet on,
+// click again to turn it off. Everything else lives on the pet itself (right-click menu).
+//
+// The workspace header has no slot, so the icon is injected with the same DOM
+// augmentation discipline the official plugins use: one coalesced MutationObserver,
+// inject-only, nothing React owns is removed or replaced, everything tagged
+// `data-dsh-lite-pet-*`, and a full undo on dispose.
 window.__ModuleLoader__.load({
   id: 'dsh-lite-pet',
   factory: (require) => {
@@ -7,69 +15,98 @@ window.__ModuleLoader__.load({
     const exports = module.exports
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
 
-    const React = require('react')
-    const h = React.createElement
-    const useState = React.useState
-    const useEffect = React.useEffect
-    const useCallback = React.useCallback
-
     const STATE_PATH = '/api/dsh-lite-pet/state'
     const ENABLED_PATH = '/api/dsh-lite-pet/enabled'
 
     const TEXT = {
       title: '桌面桌宠',
-      description:
-        '在桌面上显示 DSH 小女仆：工作时冒出最新一段正文，等你确认时亮黄点，完成后显示「会话名」已完成；点击打开 DSH，右键换动作 / 查余额 / 关闭。',
-      on: '已开启',
-      off: '已关闭',
-      unsupported: '仅支持 Windows',
-      failed: '读取状态失败',
-      toggleFailed: '切换失败',
+      on: '桌面桌宠：已开启（点击关闭）',
+      off: '桌面桌宠：已关闭（点击开启）',
+      unsupported: '桌面桌宠：仅支持 Windows',
+      failed: '桌面桌宠：读取状态失败',
+      toggleFailed: '桌面桌宠：切换失败',
     }
+
+    // Host class names come from a hashed CSS module (`<hash>_headerActions`), and the
+    // hash changes between builds, so every lookup matches the SUFFIX through an
+    // attribute-contains selector. A renamed suffix simply skips the button.
+    const SEARCH_SLOT_SUFFIX = '_searchSlot'
+    const HEADER_ACTIONS_SUFFIX = '_headerActions'
+    const SECTION_HEADER_SUFFIX = '_sectionHeader'
+
+    // The host's own outline icons are drawn on a 16-unit grid with stroke-width 1, so
+    // the same visual weight on this 100-unit artwork is 100/16 = 6.25.
+    const GLYPH_VIEWBOX = '0 0 100 100'
+    const GLYPH_STROKE = 6.25
+    const GLYPH =
+      '<svg width="16" height="16" viewBox="' + GLYPH_VIEWBOX + '" fill="none" aria-hidden="true" ' +
+      'stroke="currentColor" stroke-width="' + GLYPH_STROKE + '" ' +
+      'stroke-linecap="round" stroke-linejoin="round" style="display:block">' +
+      // Water-drop body.
+      '<path d="M 50 10 C 30 40, 25 50, 25 65 A 25 25 0 0 0 75 65 C 75 50, 70 40, 50 10 Z"/>' +
+      // Two eyes, mirrored about the centre.
+      '<path d="M 40 56 L 40 64"/>' +
+      '<path d="M 60 56 L 60 64"/>' +
+      '</svg>'
 
     async function readJson(path, init) {
       const response = await fetch(path, init)
-      const body = await response.json().catch(() => null)
-      return body
+      return await response.json().catch(() => null)
     }
 
-    function Row() {
-      const [state, setState] = useState(null)
-      const [busy, setBusy] = useState(false)
-      const [error, setError] = useState(null)
+    /**
+     * Reads and toggles the pet through the Host's `/api/dsh-lite-pet` routes, which sit
+     * behind the normal `/api` fence and carry the browser cookie. Returns a controller
+     * whose `paint` is handed to the DOM augmentation.
+     */
+    function createSwitch() {
+      const view = { enabled: false, supported: true, busy: false, error: null }
+      let button = null
+      let disposed = false
 
-      const load = useCallback(async () => {
+      const title = () => {
+        if (view.busy) return TEXT.title
+        if (!view.supported) return TEXT.unsupported
+        if (view.error !== null) return view.error
+        return view.enabled ? TEXT.on : TEXT.off
+      }
+
+      const paint = () => {
+        if (button === null || disposed) return
+        button.title = title()
+        button.setAttribute('aria-label', title())
+        button.setAttribute('aria-pressed', view.enabled ? 'true' : 'false')
+        button.disabled = view.busy || !view.supported
+        // On = brand colour; off = the muted secondary ink the surrounding chrome uses.
+        button.style.color = view.enabled
+          ? 'var(--dsw-alias-brand-primary, #4d6bfe)'
+          : 'var(--dsw-alias-label-secondary, #8a8a8a)'
+        button.style.opacity = view.busy ? '0.55' : !view.supported ? '0.4' : view.enabled ? '1' : '0.75'
+        button.style.cursor = view.busy || !view.supported ? 'default' : 'pointer'
+      }
+
+      const refresh = async () => {
         try {
           const body = await readJson(STATE_PATH)
-          if (body !== null && body.ok === true) {
-            setState(body)
-            setError(null)
+          if (body === null || body.ok !== true) {
+            view.error = TEXT.failed
           } else {
-            setError(TEXT.failed)
+            view.enabled = body.enabled === true
+            view.supported = body.supported !== false
+            view.error = null
           }
         } catch {
-          setError(TEXT.failed)
+          view.error = TEXT.failed
         }
-      }, [])
+        paint()
+      }
 
-      useEffect(() => {
-        void load()
-      }, [load])
-
-      // The pet can also be closed from its own right-click menu, so re-read the
-      // state whenever the window regains focus.
-      useEffect(() => {
-        const onFocus = () => {
-          void load()
-        }
-        window.addEventListener('focus', onFocus)
-        return () => window.removeEventListener('focus', onFocus)
-      }, [load])
-
-      const toggle = useCallback(async () => {
-        if (state === null || busy) return
-        const next = state.enabled !== true
-        setBusy(true)
+      const toggle = async () => {
+        if (view.busy || !view.supported) return
+        const next = !view.enabled
+        view.busy = true
+        view.enabled = next // optimistic; reverted below if the write fails
+        paint()
         try {
           const body = await readJson(ENABLED_PATH, {
             method: 'POST',
@@ -77,197 +114,104 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ enabled: next }),
           })
           if (body !== null && body.ok === true) {
-            setState(body)
-            setError(null)
+            view.enabled = body.enabled === true
+            view.error = null
           } else {
-            setError(body !== null && typeof body.error === 'string' ? body.error : TEXT.toggleFailed)
-            void load()
+            view.enabled = !next
+            view.error = body !== null && typeof body.error === 'string' ? body.error : TEXT.toggleFailed
           }
         } catch {
-          setError(TEXT.toggleFailed)
-          void load()
+          view.enabled = !next
+          view.error = TEXT.toggleFailed
         } finally {
-          setBusy(false)
+          view.busy = false
+          paint()
         }
-      }, [state, busy, load])
+      }
 
-      const supported = state === null ? true : state.supported !== false
-      const enabled = state !== null && state.enabled === true
-      const status = state === null ? '' : supported ? (enabled ? TEXT.on : TEXT.off) : TEXT.unsupported
-
-      return h(
-        'div',
-        {
-          // Addressed by the sidebar shortcut so it can scroll this row into view.
-          'data-dsh-lite-pet-row': '',
-          style: {
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '24px',
-            padding: '10px 0',
-          },
+      return {
+        paint,
+        refresh,
+        toggle,
+        attach: (element) => {
+          button = element
+          paint()
         },
-        h(
-          'div',
-          { style: { display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 } },
-          h(
-            'div',
-            { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary, #1a1a1a)' } },
-            TEXT.title,
-            h(
-              'span',
-              { style: { marginLeft: '8px', fontSize: '12px', fontWeight: 400, color: 'var(--dsw-alias-label-secondary, #8a8a8a)' } },
-              status,
-            ),
-          ),
-          h(
-            'div',
-            { style: { fontSize: '12.5px', lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary, #8a8a8a)' } },
-            error !== null ? error : TEXT.description,
-          ),
-        ),
-        h(Switch, {
-          checked: enabled,
-          disabled: !supported || busy || state === null,
-          onChange: toggle,
-        }),
-      )
-    }
-
-    function Switch(props) {
-      const enabled = props.checked === true
-      const disabled = props.disabled === true
-      return h(
-        'button',
-        {
-          type: 'button',
-          role: 'switch',
-          'aria-checked': enabled,
-          disabled,
-          onClick: props.onChange,
-          style: {
-            flex: 'none',
-            width: '38px',
-            height: '22px',
-            padding: '2px',
-            border: 'none',
-            borderRadius: '11px',
-            cursor: disabled ? 'default' : 'pointer',
-            opacity: disabled ? 0.5 : 1,
-            background: enabled
-              ? 'var(--dsw-alias-brand-primary, #4d6bfe)'
-              : 'var(--dsw-alias-border-l2, #d0d0d0)',
-            transition: 'background 120ms ease',
-          },
+        detach: () => {
+          button = null
         },
-        h('span', {
-          style: {
-            display: 'block',
-            width: '18px',
-            height: '18px',
-            borderRadius: '50%',
-            background: '#ffffff',
-            boxShadow: '0 1px 2px rgba(0,0,0,.25)',
-            transform: enabled ? 'translateX(16px)' : 'translateX(0)',
-            transition: 'transform 120ms ease',
-          },
-        }),
-      )
+        dispose: () => {
+          disposed = true
+          button = null
+        },
+      }
     }
-
-    // ——— sidebar workspace-header button ————————————————————————————————
-    //
-    // The workspace section header has no slot of its own, so this is the same DOM
-    // augmentation the official `dsh-codespace-workspace` plugin uses: one coalesced
-    // MutationObserver, inject-only, never removing or replacing a React-owned node,
-    // everything tagged `data-dsh-lite-pet-*`, and a full undo on dispose.
-    //
-    // Host class names come from a hashed CSS module (`<hash>_headerActions`), and the
-    // hash changes between builds, so every lookup matches the SUFFIX through an
-    // attribute-contains selector. If a future build renames a suffix the button is
-    // simply skipped; nothing else breaks.
-    //
-    // The row is `<sectionHeader>` = [label][searchSlot][headerActions]. The user asked
-    // for the seat "before 搜索", i.e. immediately left of the search box, which is what
-    // inserting ahead of `headerActions` gives us.
-    const SEARCH_SLOT_SUFFIX = '_searchSlot'
-    const HEADER_ACTIONS_SUFFIX = '_headerActions'
-    const SECTION_HEADER_SUFFIX = '_sectionHeader'
-    const GLYPH_STROKE = 1 // Regular weight, matching the host's own outline icons
 
     /**
-     * Keeps one button inserted in the workspace section header, immediately left of
+     * Keeps the pet switch inserted in the workspace section header, immediately left of
      * the search box. Returns an undo function.
      */
-    function augmentWorkspaceHeader(onClick) {
-      let root = null
+    function augmentWorkspaceHeader(control) {
       let button = null
       let frame = 0
 
       const teardown = () => {
         if (button !== null && button.parentNode !== null) button.parentNode.removeChild(button)
+        control.detach()
         button = null
+      }
+
+      const build = () => {
+        const element = document.createElement('button')
+        element.type = 'button'
+        element.setAttribute('data-dsh-lite-pet-header', '')
+        element.style.cssText = [
+          'flex:none',
+          'display:inline-flex',
+          'align-items:center',
+          'justify-content:center',
+          'width:28px',
+          'height:28px',
+          'padding:0',
+          'border:none',
+          'border-radius:var(--dsw-radius-md, 8px)',
+          'background:transparent',
+          'color:var(--dsw-alias-label-secondary, #8a8a8a)',
+          'cursor:pointer',
+        ].join(';')
+        element.addEventListener('click', () => {
+          void control.toggle()
+        })
+        element.addEventListener('mouseenter', () => {
+          element.style.background = 'var(--dsw-alias-interactive-hover, rgba(0,0,0,.06))'
+        })
+        element.addEventListener('mouseleave', () => {
+          element.style.background = 'transparent'
+        })
+        element.innerHTML = GLYPH
+        control.attach(element)
+        return element
       }
 
       const place = () => {
         const header = document.querySelector(`[class*="${SECTION_HEADER_SUFFIX}"]`)
         if (header === null) {
-          teardown() // the section is not on screen (another settings page is open)
+          // Another settings page is open, or the sidebar is in a shape we do not know.
+          teardown()
           return
         }
-        root = header
         const actions = header.querySelector(`[class*="${HEADER_ACTIONS_SUFFIX}"]`)
-        // Insert before the actions group: that is the "left of 搜索" seat the user
-        // asked for, and it survives the headerActions collapse while searching.
         if (actions === null) {
           teardown()
           return
         }
-        if (button === null) {
-          button = document.createElement('button')
-          button.type = 'button'
-          button.setAttribute('data-dsh-lite-pet-header', '')
-          button.setAttribute('aria-label', TEXT.title)
-          button.title = TEXT.title
-          button.style.cssText = [
-            'flex:none',
-            'display:inline-flex',
-            'align-items:center',
-            'justify-content:center',
-            'width:28px',
-            'height:28px',
-            'padding:0',
-            'border:none',
-            'border-radius:var(--dsw-radius-md, 8px)',
-            'background:transparent',
-            'color:var(--dsw-alias-label-secondary, #8a8a8a)',
-            'cursor:pointer',
-          ].join(';')
-          button.addEventListener('click', onClick)
-          button.addEventListener('mouseenter', () => {
-            button.style.background = 'var(--dsw-alias-interactive-hover, rgba(0,0,0,.06))'
-          })
-          button.addEventListener('mouseleave', () => {
-            button.style.background = 'transparent'
-          })
-          // The glyph is drawn with the same 16px outline spec as the host's icons.
-          button.innerHTML =
-            '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" ' +
-            `stroke="currentColor" stroke-width="${GLYPH_STROKE}" stroke-linecap="round" ` +
-            'stroke-linejoin="round" style="display:block">' +
-            '<path d="M1.6 8.6c0-3.4 2.8-5.9 6.2-5.9 3.6 0 6.6 2.6 6.6 5.6 0 2.4-2 4.1-4.6 4.1-1.6 0-3-.6-4.1-1.6-.5-.5-1.2-.6-1.8-.3-.7.3-1.3.1-1.6-.5-.3-.5-.4-1-.4-1.4z"/>' +
-            '<circle cx="10.2" cy="6.9" r="0.85"/>' +
-            '<path d="M1.9 8.9C1.2 8.6.7 8.2.4 7.9c.5-.2 1.1-.3 1.8-.2"/>' +
-            '<path d="M5.6 13.1c-.5.7-.9 1.2-1.4 1.5-.2-.6-.2-1.2 0-1.8"/>' +
-            '</svg>'
-        }
-        if (button.parentNode !== header) {
+        if (button === null) button = build()
+        // Immediately before the host's actions group: the seat left of 搜索, and it
+        // survives the headerActions collapse while the search box is expanded.
+        if (button.parentNode !== header || button.nextSibling !== actions) {
           header.insertBefore(button, actions)
-          return
         }
-        // Already in this header; only move it if something displaced it.
-        if (button.nextSibling !== actions) header.insertBefore(button, actions)
+        control.paint()
       }
 
       const schedule = () => {
@@ -277,13 +221,13 @@ window.__ModuleLoader__.load({
           try {
             place()
           } catch {
-            /* a DOM shape we do not recognise must never break the row */
+            /* an unfamiliar DOM shape must never break the row */
           }
         })
       }
 
       // One observer, coalesced through requestAnimationFrame: React re-renders the
-      // header on every search keystroke and on every section switch.
+      // header on every search keystroke and on every settings-section switch.
       const observer = new MutationObserver(schedule)
       observer.observe(document.body, { childList: true, subtree: true })
       place()
@@ -292,41 +236,35 @@ window.__ModuleLoader__.load({
         observer.disconnect()
         if (frame !== 0) cancelAnimationFrame(frame)
         teardown()
-        if (root !== null) root = null
       }
     }
 
     function apply(ctx) {
-      ctx.slots.inject('settings.general.item', () =>
-        ctx.slots.register(
-          {
-            name: 'settings.general.item',
-            id: 'dsh-lite-pet',
-            // After performance-usage (30), before current-version (100); the tailscale row sits at 95.
-            order: 96,
-          },
-          Row,
-        ),
-      )
+      const control = createSwitch()
 
-      // Clicking the header button opens the pet's own settings row by scrolling it into
-      // view; it is a shortcut, not a second switch.
-      ctx.effect(() =>
-        augmentWorkspaceHeader(() => {
-          const items = document.querySelectorAll('[data-dsh-lite-pet-row]')
-          const first = items[0]
-          if (first !== undefined && typeof first.scrollIntoView === 'function') {
-            first.scrollIntoView({ block: 'center', behavior: 'smooth' })
-          }
-        }),
-      )
+      ctx.effect(() => {
+        void control.refresh()
+        // The pet can also be switched off from its own right-click menu (关闭桌宠), so
+        // re-read whenever the window regains focus instead of trusting a stale value.
+        const onFocus = () => {
+          void control.refresh()
+        }
+        window.addEventListener('focus', onFocus)
+        const undo = augmentWorkspaceHeader(control)
+        return () => {
+          window.removeEventListener('focus', onFocus)
+          undo()
+          control.dispose()
+        }
+      })
     }
 
     exports.name = 'dsh-lite-pet'
-    exports.inject = ['slots']
+    // Every client half in this profile declares an inject list; an empty one is the safe
+    // form when no service is read. `slots` is not needed any more (no slot is registered),
+    // but omitting the field entirely is untested territory in this shell.
+    exports.inject = []
     exports.apply = apply
     return module.exports
   },
 })
-
-
