@@ -32,6 +32,11 @@ const popup = readFileSync(join(ROOT, 'src', 'pet', 'PopupMenu.cs'), 'utf8')
 const failures = []
 // The icon must be a peer of the host icons visually: same metrics and the same
 // single hover rule. Inventing an on/off colour was the reported complaint.
+// Centring is part of the host control, not decoration: without inline-flex the
+// 16px glyph sits on the text baseline and reads as low in the 28px box.
+if (!/display:inline-flex/.test(client)) failures.push('the switch icon is not a flex box')
+if (!/justify-content:center/.test(client)) failures.push('the switch icon is not centred horizontally')
+if (!/align-items:center/.test(client)) failures.push('the switch icon is not centred vertically')
 if (!/dsw-radius-sm/.test(client)) failures.push('the switch icon does not use the host radius token')
 if (!/dsw-alias-interactive-bg-hover/.test(client)) {
   failures.push('the switch icon does not use the host hover token')
@@ -85,6 +90,11 @@ if (!/removeChild\(button\)/.test(client)) failures.push('the injected button is
 // The icon anchors on the search slot: immediately left of 搜索.
 // The icon must be a peer of the host icons visually: same metrics and the same
 // single hover rule. Inventing an on/off colour was the reported complaint.
+// Centring is part of the host control, not decoration: without inline-flex the
+// 16px glyph sits on the text baseline and reads as low in the 28px box.
+if (!/display:inline-flex/.test(client)) failures.push('the switch icon is not a flex box')
+if (!/justify-content:center/.test(client)) failures.push('the switch icon is not centred horizontally')
+if (!/align-items:center/.test(client)) failures.push('the switch icon is not centred vertically')
 if (!/dsw-radius-sm/.test(client)) failures.push('the switch icon does not use the host radius token')
 if (!/dsw-alias-interactive-bg-hover/.test(client)) {
   failures.push('the switch icon does not use the host hover token')

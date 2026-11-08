@@ -174,6 +174,12 @@ window.__ModuleLoader__.load({
           // class suffix — that one belongs to a different module and looked undersized.
           'width:28px',
           'height:28px',
+          // The centring is what puts the 16px glyph in the middle of the 28px box.
+          // Without it the button falls back to inline-block and the SVG sits on the
+          // text baseline, which is why the icon looked low and off-centre.
+          'display:inline-flex',
+          'justify-content:center',
+          'align-items:center',
           'padding:0',
           'border:none',
           'border-radius:var(--dsw-radius-sm, 6px)',
