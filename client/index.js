@@ -35,6 +35,9 @@ window.__ModuleLoader__.load({
     const CLASS_NAME = 'dsh-lite-pet-header-switch'
     const STYLE_ID = 'dsh-lite-pet-header-switch-style'
     const STYLE_TEXT = [
+      // Copied from the host's own header `_iconButton` (WorkspaceBrowser). Same box,
+      // same ink, and a hover that only changes the background. Every value is a theme
+      // variable, so light and dark both resolve correctly.
       '.' + CLASS_NAME + '{',
       'width:28px;height:28px;padding:0;border:none;',
       'border-radius:var(--dsw-radius-sm);',
@@ -42,6 +45,7 @@ window.__ModuleLoader__.load({
       'color:var(--dsw-alias-label-secondary);',
       'cursor:pointer;',
       'display:inline-flex;justify-content:center;align-items:center;',
+      'position:relative;',
       '}',
       '.' + CLASS_NAME + ':hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.' + CLASS_NAME + ':focus-visible{',
@@ -49,15 +53,41 @@ window.__ModuleLoader__.load({
       'outline-offset:-2px;',
       '}',
       '.' + CLASS_NAME + ':disabled{cursor:default;opacity:.5;background:none}',
-    ].join('')
+      // The hover label. Setting `title` would hand this to the OS, which draws a pale
+      // yellow box matching nothing else here, so the text lives in `data-tip` and the
+      // label is drawn from the same tokens as the surrounding UI. Pure CSS: no
+      // listeners and no timers, so hovering costs nothing.
+      '.' + CLASS_NAME + '::after{',
+      'content:attr(data-tip);position:absolute;top:calc(100% + 8px);left:50%;',
+      'transform:translateX(-50%);',
+      'padding:4px 8px;border-radius:var(--dsw-radius-sm,6px);',
+      'background:var(--dsw-alias-bg-overlay,#fff);',
+      'color:var(--dsw-alias-label-primary,#1c1c1e);',
+      'border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.25));',
+      'font-size:11px;line-height:14px;white-space:nowrap;',
+      'box-shadow:0 4px 12px rgba(0,0,0,.18);',
+      'opacity:0;visibility:hidden;pointer-events:none;transition:opacity 90ms ease;',
+      'z-index:70;',
+      '}',
+      '@media (hover:hover){.' + CLASS_NAME + ':hover::after{opacity:1;visibility:visible}}',
+    
+].join('')
 
-    /** Injects the rule once per document. Removing it with the node keeps the DOM clean. */
+    /**
+     * Injects the rule, replacing any stale copy. The id check is not "already done" —
+     * a previous load of this plugin can leave a stylesheet behind, and skipping then
+     * would keep serving its old text forever, which is indistinguishable from the
+     * rule not applying at all. Always writing the current text is idempotent and
+     * costs nothing.
+     */
     function installStyle() {
-      if (document.getElementById(STYLE_ID) !== null) return () => {}
-      const style = document.createElement('style')
-      style.id = STYLE_ID
-      style.textContent = STYLE_TEXT
-      document.head.appendChild(style)
+      let style = document.getElementById(STYLE_ID)
+      if (style === null) {
+        style = document.createElement('style')
+        style.id = STYLE_ID
+        document.head.appendChild(style)
+      }
+      if (style.textContent !== STYLE_TEXT) style.textContent = STYLE_TEXT
       return () => {
         if (style.parentNode !== null) style.parentNode.removeChild(style)
       }
@@ -114,7 +144,9 @@ window.__ModuleLoader__.load({
 
       const paint = () => {
         if (button === null || disposed) return
-        button.title = title()
+        // data-tip feeds the CSS label. `title` is deliberately NOT set: the native one
+        // is an OS-drawn box that matches nothing else in this UI.
+        button.setAttribute('data-tip', title())
         button.setAttribute('aria-label', title())
         button.setAttribute('aria-pressed', view.enabled ? 'true' : 'false')
         button.disabled = view.busy || !view.supported
