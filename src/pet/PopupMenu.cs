@@ -234,6 +234,11 @@ namespace DshLitePet
             Native.SetCapture(Hwnd);
             Relayout();
             Native.ShowWindow(Hwnd, Native.SW_SHOWNOACTIVATE);
+            // Raise above the pet, which is topmost too. Within the topmost band the
+            // order is whoever was raised last, and the pet is raised on every drag and
+            // scale change — so without this the menu could end up underneath it.
+            Native.SetWindowPos(Hwnd, (IntPtr)Native.HWND_TOPMOST, 0, 0, 0, 0,
+                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
 
             while (_open)
             {

@@ -184,8 +184,11 @@ window.__ModuleLoader__.load({
         element.addEventListener('click', () => {
           void control.toggle()
         })
+        // Match the host's own icon buttons: they hover with the sidebar's
+        // interactive background and no border. Guessing a token made this feel
+        // different from the icons beside it, which was the complaint.
         element.addEventListener('mouseenter', () => {
-          element.style.background = 'var(--dsw-alias-interactive-hover, rgba(0,0,0,.06))'
+          element.style.background = 'var(--dsw-alias-interactive-secondary-hover, rgba(0,0,0,.05))'
         })
         element.addEventListener('mouseleave', () => {
           element.style.background = 'transparent'
@@ -207,7 +210,16 @@ window.__ModuleLoader__.load({
         // headerActions instead puts the icon to the RIGHT of the search box, because the
         // actions group comes after it in document order.
         const search = header.querySelector(`[class*="${SEARCH_SLOT_SUFFIX}"]`)
-        const anchor = search !== null ? search : header.querySelector(`[class*="${HEADER_ACTIONS_SUFFIX}"]`)
+        // Sit between 搜索 and the icon group on its right. sectionHeader is
+        // `justify-content:flex-end` with `gap:4px`, so a node in that position reads
+        // as part of the same icon run while still being left of the search box — the
+        // two requirements the user asked for are not actually in conflict.
+        const actions = header.querySelector(`[class*="${HEADER_ACTIONS_SUFFIX}"]`)
+        const anchor = actions !== null
+          ? actions
+          : search !== null
+            ? search.nextSibling
+            : null
         if (anchor === null) {
           teardown()
           return

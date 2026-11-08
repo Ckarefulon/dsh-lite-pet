@@ -114,15 +114,13 @@ namespace DshLitePet
                 _menu = new PetMenu(_catalog);
                 // The menu treats the pet as part of itself for dismissal: moving from a
                 // row onto the pet must not close it.
-                PopupMenu.PetHit = (x, y) =>
-                {
-                    Native.RECT petRect = default(Native.RECT);
-                    if (_hwnd == IntPtr.Zero || !Native.GetWindowRect(_hwnd, ref petRect)) return false;
-                    int lx = x - petRect.Left;
-                    int ly = y - petRect.Top;
-                    if (lx < 0 || ly < 0) return false;
-                    return _canvas != null && _canvas.HitTest(lx, ly);
-                };
+                // The menu treats the pet as part of itself for dismissal. This MUST go
+                // through the same mapping the pet uses for its own clicks: the window is
+                // a scaled rendering of the canvas, so a screen point has to be divided by
+                // _scale before it means anything to the hit mask. Without that the mask
+                // was read at the wrong scale and the menu closed while the pointer was
+                // still over the pet.
+                PopupMenu.PetHit = PetHitAtScreen;
                 _ipc = new Ipc();
                 _ipc.Start();
 
@@ -311,6 +309,22 @@ namespace DshLitePet
         }
 
         /// <summary>Mouse hit testing: HTTRANSPARENT lets clicks fall through to whatever is underneath.</summary>
+        /// <summary>
+        /// Whether a screen point is on the pet's opaque pixels. Shares the scaling
+        /// rules with <see cref="HitTest"/>: the window draws the canvas at _scale, so a
+        /// screen point must be divided by _scale before it indexes the hit mask.
+        /// </summary>
+        internal static bool PetHitAtScreen(int screenX, int screenY)
+        {
+            if (_canvas == null || _hwnd == IntPtr.Zero) return false;
+            var local = new Native.POINT { X = screenX, Y = screenY };
+            Native.ScreenToClient(_hwnd, ref local);
+            if (_scale <= 0) return false;
+            int x = (int)Math.Round(local.X / _scale);
+            int y = (int)Math.Round(local.Y / _scale);
+            return _canvas.HitTest(x, y);
+        }
+
         private static int HitTest(IntPtr lParam)
         {
             int screenX = unchecked((short)((long)lParam & 0xFFFF));
