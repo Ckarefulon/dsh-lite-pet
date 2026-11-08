@@ -80,11 +80,15 @@ export const STYLE_TAG = 'dsh-pet-baifan/baifan.css';
 /** 覆盖层根节点 id，重复挂载时按它摘掉旧的。 */
 export const ROOT_ID = 'dsh-pet-baifan-root';
 
-/** 覆盖层压在宠物之上（渲染端 overlay 是 1000），但压不过 DSH 自己的模态框。 */
-const Z_INDEX = 1500;
+/** 覆盖层压在桌宠之上（桌宠 `.dsh-pet-root` 是 z-index:40）；只保证这一层关系。 */
+const Z_INDEX = 50;
 
 /** 覆盖层与米饭、分数的样式。 */
 export const CSS = [
+  // 覆盖层由 shell.overlay 槽承载（AppFrame 的 [data-shell-overlay]，z-index:20），不是 body
+  // 直接子级：宿主给 macOS 写的 body > :not(#root){no-drag} 命中不到它，所以这里不声明
+  // -webkit-app-region——那条声明会在 Windows 上生成一块铺满全窗的 no-drag 排除区，
+  // 把标题栏拖拽带整条挖掉（#323 / #324）。
   '#dsh-pet-baifan-root{position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:' + Z_INDEX + '}',
   '.bf-rice{position:absolute;transform-origin:50% 100%;will-change:transform,opacity;',
   'user-select:none;-webkit-user-drag:none;pointer-events:none}',

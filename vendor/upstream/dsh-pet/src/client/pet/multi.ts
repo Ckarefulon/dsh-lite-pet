@@ -45,11 +45,12 @@ import type { WorkStatusSnapshot } from '../../shared/work-status.ts';
 import type { PetCardProps } from './card/props.ts';
 import type { PetRuntime, RuntimePet } from './types.ts';
 import { setClickSoundEnabled } from './click-sound.ts';
-import { setSurface, setVoiceConfig } from '../../shared/voice.ts';
+import { setSurface, setVoiceConfig, setVoiceNotifyEnabled } from '../../shared/voice.ts';
 import { runStatePoll } from './state-poll.ts';
 import { setMenuItems } from '../menu-service.ts';
 import { setStateSnapshot } from '../state-service.ts';
 import { jumpToSession, notifyFromFrame } from '../notify.ts';
+import { speakWorkStatus } from '../voice-notify.ts';
 import { STATE_FALLBACK_MS, STATE_WAIT_MS } from './timings.ts';
 
 /**
@@ -121,8 +122,9 @@ export function createPetMulti(
         setClickSoundEnabled(main.clickSoundEnabled === true);
         // 本页就是网页端：按叶子播放时只认 voiceTo='web' 的那一句。
         setSurface('web');
-        // 音色、总开关与音量同源：缺字段即「不播」，不在端上兜默认值。
-        setVoiceConfig(main.voiceName, main.voiceEnabled, main.voiceVolume);
+        // 音色与音量同源：缺字段即「用默认音色 / 最大音量」，不在端上兜默认值。
+        setVoiceConfig(main.voiceName, main.voiceVolume);
+        setVoiceNotifyEnabled(main.voiceNotifyEnabled);
         const flattened = flattenConfigPets(merged);
         petBridge.current = flattened;
         // 「添加宠物」模板取 main 条目的 pets[0]。
@@ -223,6 +225,8 @@ export function createPetMulti(
             if (snap) {
               setWorkStatus(snap);
               setWorkStatusTick((t) => t + 1); // 任何变化都触发，含回到空闲。
+              // 工作状态播报：与系统通知同级、同样只在网页端出声；不写 say 叶子。
+              speakWorkStatus(snap);
             }
             return;
           }
