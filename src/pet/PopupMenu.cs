@@ -232,10 +232,13 @@ namespace DshLitePet
             _hoverX = int.MinValue;
             _hoverY = int.MinValue;
 
-            // Capture so drags and wheel input stay with the menu while it is open.
+            Native.ShowWindow(Hwnd, Native.SW_SHOWNOACTIVATE);
+            // Capture AFTER the window is visible. Setting it while the window was still
+            // hidden was silently dropped — GetCapture() returned NULL during a press —
+            // so the menu never received button messages and the press reached neither
+            // the menu nor the pet.
             Native.SetCapture(Hwnd);
             Relayout();
-            Native.ShowWindow(Hwnd, Native.SW_SHOWNOACTIVATE);
             // Raise above the pet, which is topmost too. Within the topmost band the
             // order is whoever was raised last, and the pet is raised on every drag and
             // scale change — so without this the menu could end up underneath it.
@@ -263,6 +266,13 @@ namespace DshLitePet
             }
 
             Native.ReleaseCapture();
+            // The capture is gone, so the pet can take it without this menu undoing it.
+            if (_petDragPending)
+            {
+                _petDragPending = false;
+                Action<int, int> begin = PetDragBegin;
+                if (begin != null) begin(_petDragX, _petDragY);
+            }
             Native.ShowWindow(Hwnd, Native.SW_HIDE);
             Root.OpenIndex = -1;
             int result = _chosenCommand;
@@ -370,40 +380,20 @@ namespace DshLitePet
         /// that affects two rows. Painting is clipped to the damaged rows and the upload is
         /// limited to the same band, so the cost follows the change rather than the menu size.
         /// </summary>
+        /// <summary>
+        /// Repaints the menu after a highlight change.
+        ///
+        /// A band-only repaint was tried and reverted: the caller works in screen
+        /// coordinates while painting works in window coordinates, and the clip band
+        /// landed in the wrong place, corrupting the menu. Correctness first — one
+        /// GDI+ pass over a menu this size is tens of microseconds, and it happens only
+        /// when the highlighted row actually changes, not on every mouse move.
+        /// </summary>
         private void RepaintRows(Rectangle previous, Rectangle next)
         {
             if (Surface == null) return;
-            List<Panel> visible = VisiblePanels();
-
-            int top = int.MaxValue;
-            int bottom = int.MinValue;
-            if (previous.Height > 0)
-            {
-                if (previous.Top < top) top = previous.Top;
-                if (previous.Bottom > bottom) bottom = previous.Bottom;
-            }
-            if (next.Height > 0)
-            {
-                if (next.Top < top) top = next.Top;
-                if (next.Bottom > bottom) bottom = next.Bottom;
-            }
-            if (top == int.MaxValue) return;
-            if (top < 0) top = 0;
-            if (bottom > SurfaceHeight) bottom = SurfaceHeight;
-            if (bottom <= top) return;
-
-            var band = new Rectangle(0, top, SurfaceWidth, bottom - top);
-            Region saved = Graphics.Clip;
-            try
-            {
-                Graphics.SetClip(band);
-                Paint(visible, false);
-            }
-            finally
-            {
-                Graphics.Clip = saved;
-            }
-            PresentBand(_originX, _originY, band);
+            Paint(VisiblePanels());
+            Present(_originX, _originY);
         }
 
 
@@ -508,8 +498,10 @@ namespace DshLitePet
                     return IntPtr.Zero;
 
                 case Native.WM_LBUTTONDOWN:
+                    OnButtonDown(lParam, true);
+                    return IntPtr.Zero;
                 case Native.WM_RBUTTONDOWN:
-                    OnButtonDown(lParam);
+                    OnButtonDown(lParam, false);
                     return IntPtr.Zero;
 
                 // The mouse went to another window: that is the "clicked elsewhere" signal.
@@ -581,21 +573,29 @@ namespace DshLitePet
             return -1;
         }
 
-        private void OnButtonDown(IntPtr lParam)
+        private void OnButtonDown(IntPtr lParam, bool leftButton)
         {
             int screenX = unchecked((short)((long)lParam & 0xFFFF)) + _originX;
             int screenY = unchecked((short)(((long)lParam >> 16) & 0xFFFF)) + _originY;
 
-            // A press on the pet while the menu is open is a drag request, not a menu
-            // interaction: the menu holds the capture, so the pet would never see it.
-            // Hand the drag over and close, so the pointer is not fighting the menu.
-            Func<int, int, bool> petHit = PetHit;
-            if (petHit != null && petHit(screenX, screenY) &&
+            // Only the LEFT button means "drag me". The right button belongs to the menu
+            // itself and must never be mistaken for a drag request.
+            //
+            // A press anywhere on the pet window's rectangle counts: requiring an opaque
+            // pixel was too strict, because the hit mask is sampled from the current frame
+            // and the pet animates, so the same point can be solid on one frame and clear on
+            // the next — which is why the drag only sometimes started.
+            if (leftButton && PetWindowContains(screenX, screenY) &&
                 !PointInAnyPanel(screenX, screenY))
             {
-                Action<int, int> begin = PetDragBegin;
+                // Remember the request; it is carried out by Show() AFTER the capture
+                // has been released. Deferring matters: beginning the drag here would
+                // have Close() release the capture right afterwards, and that release
+                // takes away the very capture the pet had just installed.
+                _petDragX = screenX;
+                _petDragY = screenY;
+                _petDragPending = true;
                 Close(0);
-                if (begin != null) begin(screenX, screenY);
                 return;
             }
 
@@ -695,6 +695,9 @@ namespace DshLitePet
         }
 
         private int _leftAt;
+        private bool _petDragPending;
+        private int _petDragX;
+        private int _petDragY;
 
         /// <summary>How long the pointer must stay away before the menu closes.</summary>
         private const int LeaveGraceMs = 180;
@@ -705,6 +708,22 @@ namespace DshLitePet
         /// for the purpose of dismissal. The pet supplies this.
         /// </summary>
         internal static Func<int, int, bool> PetHit;
+
+        /// <summary>
+        /// Whether a screen point is inside the pet window's rectangle.
+        ///
+        /// Deliberately geometric rather than pixel-accurate: the pet animates, so a
+        /// point that is opaque on one frame is transparent on the next, and a drag that
+        /// sometimes starts is worse than one that lets a transparent corner through.
+        /// </summary>
+        private static bool PetWindowContains(int x, int y)
+        {
+            Func<int, int, bool> inRect = PetRectContains;
+            return inRect != null && inRect(x, y);
+        }
+
+        /// <summary>The pet supplies this: is the point inside the pet window?</summary>
+        internal static Func<int, int, bool> PetRectContains;
 
         /// <summary>
         /// Starts a pet drag on the pet's behalf. The menu holds the mouse capture while

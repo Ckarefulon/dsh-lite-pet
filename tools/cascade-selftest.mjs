@@ -95,3 +95,43 @@ if (failures.length > 0) {
   process.exit(1)
 }
 console.log(`[cascade] ok — ${checked} non-adjacent pairs, no overlap; old rule still reproduces the bug`)
+
+// ——— the drag handoff must stay wired ————————————————————————————————
+//
+// Dragging the pet while its menu is open only works because the menu recognises a LEFT
+// press on the pet as a drag request and hands it back after releasing its capture. Two
+// things about that are easy to break silently: gating on the pixel mask (the pet
+// animates, so the press sometimes lands on a clear frame) and carrying the handoff out
+// before the capture is released (the release then cancels the pet's capture).
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const popup = readFileSync(join(ROOT, 'src', 'pet', 'PopupMenu.cs'), 'utf8')
+const program = readFileSync(join(ROOT, 'src', 'pet', 'Program.cs'), 'utf8')
+const wiring = []
+
+if (!/leftButton && PetWindowContains\(/.test(popup)) {
+  wiring.push('the drag handoff is not gated on the left button and the pet rectangle')
+}
+if (/leftButton && PetHit\(/.test(popup)) {
+  wiring.push('the drag handoff still uses the pixel mask, which misses animated frames')
+}
+if (!/PetRectContains/.test(program)) {
+  wiring.push('Program.cs does not supply PetRectContains')
+}
+// The handoff must happen after ReleaseCapture in Show().
+const releaseAt = popup.indexOf('Native.ReleaseCapture();')
+const handoffAt = popup.indexOf('if (_petDragPending)')
+if (releaseAt < 0 || handoffAt < 0 || handoffAt < releaseAt) {
+  wiring.push('the drag handoff is not carried out after the menu releases its capture')
+}
+if (!/PopupMenu\.PetDragBegin/.test(program)) {
+  wiring.push('Program.cs does not install PetDragBegin')
+}
+
+if (wiring.length > 0) {
+  for (const issue of wiring) console.error(`[cascade] ${issue}`)
+  process.exit(1)
+}

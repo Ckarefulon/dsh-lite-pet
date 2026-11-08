@@ -121,6 +121,15 @@ namespace DshLitePet
                 // was read at the wrong scale and the menu closed while the pointer was
                 // still over the pet.
                 PopupMenu.PetHit = PetHitAtScreen;
+                // The drag handoff uses the window rectangle, not the pixel mask: the
+                // pet animates, so a pixel test makes the drag start only sometimes.
+                PopupMenu.PetRectContains = (x, y) =>
+                {
+                    Native.RECT petRect = default(Native.RECT);
+                    if (_hwnd == IntPtr.Zero || !Native.GetWindowRect(_hwnd, ref petRect)) return false;
+                    return x >= petRect.Left && x < petRect.Right &&
+                           y >= petRect.Top && y < petRect.Bottom;
+                };
 
                 // The menu captures the mouse while it is open, so a press on the pet never
                 // reaches this window and a drag could not start. The menu hands that press
