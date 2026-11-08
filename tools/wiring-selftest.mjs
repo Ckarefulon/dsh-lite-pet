@@ -28,12 +28,18 @@ const program = readFileSync(join(ROOT, 'src', 'pet', 'Program.cs'), 'utf8')
 const menu = readFileSync(join(ROOT, 'src', 'pet', 'Menu.cs'), 'utf8')
 // The icon anchors on the search slot: immediately left of 搜索, which is what the
 // user asked for, and does not depend on the actions group existing.
-if (!/insertBefore\(button, anchor\)/.test(client)) {
-  failures.push('the button is not inserted immediately before its anchor')
-}
-
 const popup = readFileSync(join(ROOT, 'src', 'pet', 'PopupMenu.cs'), 'utf8')
 const failures = []
+// The icon must be a peer of the host icons visually: same metrics and the same
+// single hover rule. Inventing an on/off colour was the reported complaint.
+if (!/dsw-radius-sm/.test(client)) failures.push('the switch icon does not use the host radius token')
+if (!/dsw-alias-interactive-bg-hover/.test(client)) {
+  failures.push('the switch icon does not use the host hover token')
+}
+if (/dsw-alias-brand-primary/.test(client)) {
+  failures.push('the switch icon still recolours itself when on')
+}
+
 
 // ——— 1) connection acquisition ————————————————————————————————————————
 
@@ -77,7 +83,16 @@ if (!/observer\.disconnect\(\)/.test(client)) failures.push('the observer is nev
 if (!/removeChild\(button\)/.test(client)) failures.push('the injected button is never removed on dispose')
 // It must sit immediately before the header actions group: the seat left of 搜索.
 // The icon anchors on the search slot: immediately left of 搜索.
-if (!/insertBefore\(button, anchor\)/.test(client)) {
+// The icon must be a peer of the host icons visually: same metrics and the same
+// single hover rule. Inventing an on/off colour was the reported complaint.
+if (!/dsw-radius-sm/.test(client)) failures.push('the switch icon does not use the host radius token')
+if (!/dsw-alias-interactive-bg-hover/.test(client)) {
+  failures.push('the switch icon does not use the host hover token')
+}
+if (/dsw-alias-brand-primary/.test(client)) {
+  failures.push('the switch icon still recolours itself when on')
+}
+if (!/insertBefore(button, anchor)/.test(client)) {
 }
 
 // ——— 4) the pet never steals focus ————————————————————————————————

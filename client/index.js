@@ -79,12 +79,12 @@ window.__ModuleLoader__.load({
         button.setAttribute('aria-label', title())
         button.setAttribute('aria-pressed', view.enabled ? 'true' : 'false')
         button.disabled = view.busy || !view.supported
-        // On = brand colour; off = the muted secondary ink the surrounding chrome uses.
-        button.style.color = view.enabled
-          ? 'var(--dsw-alias-brand-primary, #4d6bfe)'
-          : 'var(--dsw-alias-label-secondary, #8a8a8a)'
-        button.style.opacity = view.busy ? '0.55' : !view.supported ? '0.4' : view.enabled ? '1' : '0.75'
-        button.style.cursor = view.busy || !view.supported ? 'default' : 'pointer'
+          // No colour or opacity difference between on and off: the icon is a peer
+          // of the buttons beside it and has to keep their exact appearance. State
+          // is carried by aria-pressed and the tooltip, not by recolouring the glyph.
+          // Only the disabled state differs, which is platform convention.
+          button.style.cursor = view.busy || !view.supported ? 'default' : 'pointer'
+          button.style.opacity = view.busy || !view.supported ? '0.5' : '1'
       }
 
       const refresh = async () => {
@@ -168,30 +168,30 @@ window.__ModuleLoader__.load({
         element.type = 'button'
         element.setAttribute('data-dsh-lite-pet-header', '')
         element.style.cssText = [
-          'flex:none',
-          'display:inline-flex',
-          'align-items:center',
-          'justify-content:center',
+          // Copied from the host's own header iconButton (WorkspaceBrowser): 28x28,
+          // radius-sm, label-secondary ink, no background. Hover swaps only the
+          // background. Deliberately NOT the 16x16 row-button variant that shares the
+          // class suffix — that one belongs to a different module and looked undersized.
           'width:28px',
           'height:28px',
           'padding:0',
           'border:none',
-          'border-radius:var(--dsw-radius-md, 8px)',
-          'background:transparent',
+          'border-radius:var(--dsw-radius-sm, 6px)',
+          'background:none',
           'color:var(--dsw-alias-label-secondary, #8a8a8a)',
           'cursor:pointer',
         ].join(';')
         element.addEventListener('click', () => {
           void control.toggle()
         })
-        // Match the host's own icon buttons: they hover with the sidebar's
-        // interactive background and no border. Guessing a token made this feel
-        // different from the icons beside it, which was the complaint.
+        // The host's rule is exactly `_iconButton:hover{background:var(--dsw-alias-interactive-bg-hover)}`
+        // with no ink change and no border. Copying it verbatim is what makes this
+        // button indistinguishable from the icons beside it.
         element.addEventListener('mouseenter', () => {
-          element.style.background = 'var(--dsw-alias-interactive-secondary-hover, rgba(0,0,0,.05))'
+          element.style.background = 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.06))'
         })
         element.addEventListener('mouseleave', () => {
-          element.style.background = 'transparent'
+          element.style.background = 'none'
         })
         element.innerHTML = GLYPH
         control.attach(element)
