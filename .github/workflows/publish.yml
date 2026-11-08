@@ -75,6 +75,10 @@ jobs:
       - name: Verify the host/client wiring
         run: node tools/wiring-selftest.mjs
 
+      # No submenu may land on a level that is not its parent: that is the reported bug.
+      - name: Verify the submenu cascade
+        run: node tools/cascade-selftest.mjs
+
       # The release asset goes up BEFORE the npm publish. It is what every new install
       # downloads on first run, so it must not be hostage to a flaky registry call:
       # when npm failed, this step never ran and the tag shipped with no asset at all.

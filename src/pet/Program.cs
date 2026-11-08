@@ -121,6 +121,29 @@ namespace DshLitePet
                 // was read at the wrong scale and the menu closed while the pointer was
                 // still over the pet.
                 PopupMenu.PetHit = PetHitAtScreen;
+
+                // The menu captures the mouse while it is open, so a press on the pet never
+                // reaches this window and a drag could not start. The menu hands that press
+                // back through here; the drag loop is tick-driven once _dragging is set, so
+                // beginning it is all that is needed.
+                PopupMenu.PetDragBegin = (screenX, screenY) =>
+                {
+                    Native.POINT start;
+                    if (!Native.GetCursorPos(out start)) return;
+                    Native.RECT petRect = default(Native.RECT);
+                    if (_hwnd == IntPtr.Zero || !Native.GetWindowRect(_hwnd, ref petRect)) return;
+                    _dragging = true;
+                    _dragPet = true;
+                    _dragMoved = false;
+                    _dragStartAt = Uptime.ElapsedMilliseconds;
+                    _dragStartX = start.X;
+                    _dragStartY = start.Y;
+                    _dragStartWindowX = petRect.Left;
+                    _dragStartWindowY = petRect.Top;
+                    // The menu released its capture on close; take it so the pet keeps
+                    // receiving the movement for the rest of the gesture.
+                    Native.SetCapture(_hwnd);
+                };
                 _ipc = new Ipc();
                 _ipc.Start();
 

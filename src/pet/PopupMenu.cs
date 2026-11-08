@@ -75,6 +75,8 @@ namespace DshLitePet
         private int _chosenCommand;
         private int _hoverX = int.MinValue;
         private int _hoverY = int.MinValue;
+        /// <summary>Screen rect of the row that was highlighted last, for dirty repaint.</summary>
+        private Rectangle _hotRect = Rectangle.Empty;
 
         private static Font MenuFont()
         {
@@ -270,8 +272,29 @@ namespace DshLitePet
         }
 
         /// <summary>Positions every submenu beside its parent row, before the window is shown.</summary>
+        /// <summary>
+        /// Positions every submenu beside its parent row.
+        ///
+        /// The direction is decided ONCE for the whole chain. Deciding per level meant
+        /// that when the root opened leftwards a level 2 could flip back rightwards,
+        /// landing on top of the root; the pointer then sat over two panels at once and
+        /// the deeper ones were dismissed as "you are browsing level 1". Opening the
+        /// whole chain in one direction makes overlap impossible.
+        /// </summary>
         private void CascadeSubmenus()
         {
+            Native.RECT work = default(Native.RECT);
+            if (!Native.SystemParametersInfo(Native.SPI_GETWORKAREA, 0, ref work, 0))
+            {
+                work = new Native.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            }
+
+            // Does the widest panel fit to the right of the root? If not, the whole
+            // chain opens to the left, because a later level can be wider than the root.
+            int widest = 0;
+            foreach (Panel panel in _panels) if (panel.Width > widest) widest = panel.Width;
+            _openLeft = Root.X + Root.Width + widest > work.Right;
+
             for (int i = 1; i < _panels.Count; i++)
             {
                 Panel parentPanel = null;
@@ -286,12 +309,25 @@ namespace DshLitePet
                 }
                 if (parentPanel == null) continue;
                 Item anchor = parentPanel.Items[parentIndex];
-                PlaceOnScreen(_panels[i],
-                    parentPanel.X + parentPanel.Width - PadX,
-                    parentPanel.Y + anchor.Bounds.Top - PadY,
-                    parentPanel.X);
+                Panel panel2 = _panels[i];
+
+                int x = _openLeft
+                    ? parentPanel.X - panel2.Width + PadX
+                    : parentPanel.X + parentPanel.Width - PadX;
+                int y = parentPanel.Y + anchor.Bounds.Top - PadY;
+
+                if (y + panel2.Height > work.Bottom) y = Math.Max(work.Top, work.Bottom - panel2.Height);
+                if (y < work.Top) y = work.Top;
+                if (x < work.Left) x = work.Left;
+                if (x + panel2.Width > work.Right) x = Math.Max(work.Left, work.Right - panel2.Width);
+
+                panel2.X = x;
+                panel2.Y = y;
             }
         }
+
+        /// <summary>True when the submenu chain opens to the left of the root.</summary>
+        private bool _openLeft;
 
         // ——— painting ————————————————————————————————————————
 
@@ -326,18 +362,56 @@ namespace DshLitePet
             Present(_originX, _originY);
         }
 
-        /// <summary>Repaints without re-measuring the window rect.</summary>
-        private void RepaintOnly()
+        /// <summary>
+        /// Repaints only the rows whose highlight changed.
+        ///
+        /// A hover moves the highlight between two rows; repainting the whole menu for that
+        /// meant clearing and redrawing every panel, every glyph and every label for a change
+        /// that affects two rows. Painting is clipped to the damaged rows and the upload is
+        /// limited to the same band, so the cost follows the change rather than the menu size.
+        /// </summary>
+        private void RepaintRows(Rectangle previous, Rectangle next)
         {
             if (Surface == null) return;
-            Paint(VisiblePanels());
-            Present(_originX, _originY);
+            List<Panel> visible = VisiblePanels();
+
+            int top = int.MaxValue;
+            int bottom = int.MinValue;
+            if (previous.Height > 0)
+            {
+                if (previous.Top < top) top = previous.Top;
+                if (previous.Bottom > bottom) bottom = previous.Bottom;
+            }
+            if (next.Height > 0)
+            {
+                if (next.Top < top) top = next.Top;
+                if (next.Bottom > bottom) bottom = next.Bottom;
+            }
+            if (top == int.MaxValue) return;
+            if (top < 0) top = 0;
+            if (bottom > SurfaceHeight) bottom = SurfaceHeight;
+            if (bottom <= top) return;
+
+            var band = new Rectangle(0, top, SurfaceWidth, bottom - top);
+            Region saved = Graphics.Clip;
+            try
+            {
+                Graphics.SetClip(band);
+                Paint(visible, false);
+            }
+            finally
+            {
+                Graphics.Clip = saved;
+            }
+            PresentBand(_originX, _originY, band);
         }
 
-        private void Paint(List<Panel> visible)
+
+
+        private void Paint(List<Panel> visible, bool clear = true)
         {
             SurfaceTheme theme = SurfaceTheme.Current();
-            Graphics.Clear(Color.Transparent);
+            if (clear) Graphics.Clear(Color.Transparent);
 
             for (int p = 0; p < visible.Count; p++)
             {
@@ -460,6 +534,8 @@ namespace DshLitePet
             _hoverX = screenX;
             _hoverY = screenY;
 
+            // Where is the pointer now, and which row does that make hot?
+            Rectangle hot = Rectangle.Empty;
             bool structureChanged = false;
             for (int p = 0; p < _panels.Count; p++)
             {
@@ -467,11 +543,30 @@ namespace DshLitePet
                 if (screenX < panel.X || screenX >= panel.X + panel.Width) continue;
                 if (screenY < panel.Y || screenY >= panel.Y + panel.Height) continue;
                 int hit = RowAt(panel, screenY);
+                if (hit >= 0)
+                {
+                    Item row = panel.Items[hit];
+                    hot = new Rectangle(panel.X + row.Bounds.X, panel.Y + row.Bounds.Y,
+                        row.Bounds.Width, row.Bounds.Height);
+                }
                 int wanted = hit >= 0 && panel.Items[hit].Submenu >= 0 ? hit : -1;
                 if (panel.OpenIndex != wanted) { panel.OpenIndex = wanted; structureChanged = true; }
                 break;
             }
-            if (structureChanged) Relayout(); else RepaintOnly();
+
+            if (structureChanged)
+            {
+                // A different submenu set is on screen: the window rect itself changes.
+                _hotRect = hot;
+                Relayout();
+                return;
+            }
+
+            // Same panels, only the highlight moved: repaint the two affected rows.
+            Rectangle previous = _hotRect;
+            _hotRect = hot;
+            if (previous.IsEmpty && hot.IsEmpty) return;
+            RepaintRows(previous, hot);
         }
 
         private static int RowAt(Panel panel, int screenY)
@@ -490,6 +585,19 @@ namespace DshLitePet
         {
             int screenX = unchecked((short)((long)lParam & 0xFFFF)) + _originX;
             int screenY = unchecked((short)(((long)lParam >> 16) & 0xFFFF)) + _originY;
+
+            // A press on the pet while the menu is open is a drag request, not a menu
+            // interaction: the menu holds the capture, so the pet would never see it.
+            // Hand the drag over and close, so the pointer is not fighting the menu.
+            Func<int, int, bool> petHit = PetHit;
+            if (petHit != null && petHit(screenX, screenY) &&
+                !PointInAnyPanel(screenX, screenY))
+            {
+                Action<int, int> begin = PetDragBegin;
+                Close(0);
+                if (begin != null) begin(screenX, screenY);
+                return;
+            }
 
             List<Panel> visible = VisiblePanels();
             for (int p = 0; p < visible.Count; p++)
@@ -597,6 +705,15 @@ namespace DshLitePet
         /// for the purpose of dismissal. The pet supplies this.
         /// </summary>
         internal static Func<int, int, bool> PetHit;
+
+        /// <summary>
+        /// Starts a pet drag on the pet's behalf. The menu holds the mouse capture while
+        /// it is open, so the pet never receives WM_LBUTTONDOWN and cannot begin a drag
+        /// by itself; the pet's drag loop is tick-driven once _dragging is set, so
+        /// handing it the press is enough. Without this, dragging the pet while its menu
+        /// was open did nothing. The pet supplies this.
+        /// </summary>
+        internal static Action<int, int> PetDragBegin;
         private bool _entered;
 
 

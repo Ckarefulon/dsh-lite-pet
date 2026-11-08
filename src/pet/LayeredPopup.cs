@@ -177,6 +177,31 @@ namespace DshLitePet
             Surface.Present(Hwnd, x, y);
         }
 
+        /// <summary>
+        /// Uploads only a horizontal band of the bitmap and re-presents the window.
+        ///
+        /// UpdateLayeredWindow always takes a whole surface, so the band is copied into a
+        /// small staging surface of the same width and presented at the band's offset. That
+        /// keeps a hover repaint proportional to the two rows that changed rather than to
+        /// the size of the whole menu.
+        /// </summary>
+        protected void PresentBand(int windowX, int windowY, Rectangle band)
+        {
+            if (Bitmap == null || band.Width <= 0 || band.Height <= 0) return;
+            if (BandSurface == null || BandSurface.Width != band.Width || BandSurface.Height != band.Height)
+            {
+                if (BandSurface != null) BandSurface.Dispose();
+                BandSurface = new Native.LayeredSurface(band.Width, band.Height);
+            }
+            BitmapData data = Bitmap.LockBits(band, ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+            try { BandSurface.UploadRows(data.Scan0, data.Stride, band.Width * 4, band.Height); }
+            finally { Bitmap.UnlockBits(data); }
+            BandSurface.Present(Hwnd, windowX, windowY + band.Top);
+        }
+
+        /// <summary>Reuse buffer for <see cref="PresentBand"/>; resized only when the band changes.</summary>
+        protected Native.LayeredSurface BandSurface;
+
         /// <summary>Rounded rectangle path, with the radius clamped to the box.</summary>
         protected static GraphicsPath RoundedRect(Rectangle r, int radius)
         {
@@ -204,6 +229,7 @@ namespace DshLitePet
 
         public void Dispose()
         {
+            if (BandSurface != null) { BandSurface.Dispose(); BandSurface = null; }
             if (Hwnd != IntPtr.Zero)
             {
                 lock (Live) Live.Remove(Hwnd);
