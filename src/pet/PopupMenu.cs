@@ -72,6 +72,19 @@ namespace DshLitePet
         private int _originX;
         private int _originY;
         private bool _open;
+
+        /// <summary>
+        /// Raises the menu when it is on screen, doing nothing otherwise.
+        ///
+        /// Only meaningful through <see cref="Program.Restack"/>: the menu is the front-most
+        /// member of the pet's window stack and must stay there for as long as it is open,
+        /// but it does not exist as a visible window before the first Show.
+        /// </summary>
+        internal void RaisePopup()
+        {
+            if (!_open) return;
+            RaiseRaw();
+        }
         private int _chosenCommand;
         private int _hoverX = int.MinValue;
         private int _hoverY = int.MinValue;
@@ -239,11 +252,11 @@ namespace DshLitePet
             // the menu nor the pet.
             Native.SetCapture(Hwnd);
             Relayout();
-            // Raise above the pet, which is topmost too. Within the topmost band the
-            // order is whoever was raised last, and the pet is raised on every drag and
-            // scale change — so without this the menu could end up underneath it.
-            Native.SetWindowPos(Hwnd, (IntPtr)Native.HWND_TOPMOST, 0, 0, 0, 0,
-                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
+            // Raise above the pet, which is topmost too. Within the topmost band the order is
+            // whoever was raised last, and the pet is raised on every drag and scale change —
+            // so the ordering is asked for from the owner, which owns the whole stack
+            // (pet ▸ bubble ▸ menu) and can put the menu in front of both.
+            Raise();
 
             while (_open)
             {

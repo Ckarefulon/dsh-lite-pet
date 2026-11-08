@@ -293,5 +293,7 @@ namespace DshLitePet
         None = 0,
         Waiting = 1,
         Done = 2,
+        /// <summary>The session ended abnormally: it will not produce an answer on its own.</summary>
+        Error = 3,
     }
 }

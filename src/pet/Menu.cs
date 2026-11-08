@@ -31,6 +31,19 @@ namespace DshLitePet
             _catalog = catalog;
         }
 
+        /// <summary>
+        /// Raises the open menu, or does nothing when it is closed.
+        ///
+        /// Called by <see cref="Program.Restack"/>: the menu is the front-most window in the
+        /// pet's stack and must stay in front of both the pet and the bubble for as long as
+        /// it is on screen.
+        /// </summary>
+        internal void RaisePopup()
+        {
+            if (_popup == null) return;
+            _popup.RaisePopup();
+        }
+
         /// <summary>Shows the menu. Returns the chosen command and, for 调整大小, the requested scale.</summary>
         public int Show(IntPtr owner, double currentScale, out CatalogEntry chosen, out double chosenScale)
         {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-lite-pet",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "轻量系统级桌宠：原生进程逐像素透明渲染，工作正文/等待确认/完成提示与余额查询联动，点击穿透",
   "type": "module",
   "main": "index.js",
@@ -46,6 +46,8 @@
     "test:playback": "node tools/playback-selftest.mjs",
     "test:wiring": "node tools/wiring-selftest.mjs",
     "test:cascade": "node tools/cascade-selftest.mjs",
+    "test:bubble": "node tools/bubble-selftest.mjs",
+    "test:stack": "node tools/stack-selftest.mjs",
     "prepack": "node tools/prepack-check.mjs"
   },
   "engines": {

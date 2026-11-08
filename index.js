@@ -7,7 +7,7 @@
  *
  * The renderer is a separate C# process (runtime/pet/DshLitePet.exe). It talks
  * to this module over newline-delimited JSON on stdio:
- *   host -> pet : {"t":"state","mode":"idle|working|waiting|done|balance","text":"…","level":n}
+ *   host -> pet : {"t":"state","mode":"idle|working|waiting|done|error|balance","text":"…","level":n}
  *                 {"t":"quit"}
  *   pet -> host : {"t":"ready"} {"t":"open"} {"t":"balance"} {"t":"closed"}
  *
@@ -38,6 +38,17 @@ const BALANCE_VISIBLE_MS = 9000
 // Backstop for the "completed" bubble. Clicking the pet clears it immediately; this only
 // stops a forgotten message from sitting there for the rest of the session.
 const DONE_VISIBLE_MS = 12 * 60_000
+// Same backstop for an abnormal end. It is deliberately not shorter: an error is the one
+// thing the user has to read, so it waits for them (or for their click) rather than
+// expiring on its own while they are looking elsewhere.
+const ERROR_VISIBLE_MS = 12 * 60_000
+// How long a session that is neither running, waiting, finished nor failed is remembered.
+// Sessions have to be forgotten eventually — the map would grow for the life of the
+// process — but only once they have nothing left to say.
+const FORGET_AFTER_MS = 30 * 60_000
+// How long an idle session keeps narrating the bubble. A running session is exempt: its
+// turn ends with a durable event, so a long silence is a slow turn, not an abandoned one.
+const ACTIVITY_WINDOW_MS = 60_000
 const RESTART_DELAY_MS = 4000
 const MAX_RESTARTS = 3
 
@@ -402,7 +413,7 @@ function createRuntime() {
     balanceUntil: 0,
     restarts: 0,
     disposing: false,
-    agents: new Map(), // sessionId -> { running, waiting, text, title, touched }
+    agents: new Map(), // sessionId -> { running, waiting, text, title, prompt, error, touched }
     doneText: null,
     doneAt: 0,
     // absent | downloading | ready | failed — the optional full animation set.
@@ -478,6 +489,10 @@ function handlePetLine(ctx, runtime, profile, message) {
     // and not about the window.
     runtime.doneText = null
     runtime.doneAt = 0
+    // The red bubble is cleared by the same click, for the same reason: opening the window
+    // is the user going to look at the failure. Leaving it up afterwards would make the pet
+    // keep reporting a problem the user has already acknowledged.
+    for (const state of runtime.agents.values()) state.error = ''
     runtime.lastSent = ''
     // `shell` is set only when the pet's own attempt established that the window is hidden
     // and out of its reach. Without it the click needs nothing from this process.
@@ -527,7 +542,7 @@ function wireAgentEvents(ctx, runtime) {
   const stateOf = (sessionId) => {
     let state = runtime.agents.get(sessionId)
     if (state === undefined) {
-      state = { running: false, waiting: 0, text: '', title: '', touched: 0 }
+      state = { running: false, waiting: 0, text: '', title: '', prompt: '', error: '', touched: 0 }
       runtime.agents.set(sessionId, state)
     }
     return state
@@ -556,15 +571,28 @@ function wireAgentEvents(ctx, runtime) {
       case 'turn/start':
         state.running = true
         state.waiting = 0
+        state.error = ''
+        state.text = ''
         runtime.doneText = null
         break
       case 'turn/end': {
         state.running = false
         state.waiting = 0
-        const kind = event.data?.reason?.kind
+        const reason = event.data?.reason
+        const kind = reason?.kind
         if (kind === 'completed') {
-          runtime.doneText = `“${state.title || '会话'}”已完成`
+          // Green carries the session TITLE, and nothing else: the dot already says it
+          // finished, so decorating the text ("…已完成") only pushed the title towards the
+          // ellipsis. The fallback covers a session whose title has not been generated yet.
+          runtime.doneText = state.title === '' ? '会话已完成' : state.title
           runtime.doneAt = Date.now()
+        } else if (kind === 'error' || kind === 'blocked' || kind === 'max-tokens') {
+          // An abnormal end is a red dot, and it outranks both green and working: the
+          // session stopped without answering, so the last thing the user saw is a
+          // question that will never be answered. `interrupted` is deliberately absent
+          // — it is the shell's own restart artefact, not something that happened to
+          // this turn, and flagging it would leave a red bubble after every reload.
+          state.error = failureText(reason, state.title)
         }
         break
       }
@@ -582,6 +610,23 @@ function wireAgentEvents(ctx, runtime) {
       case 'approval/decided':
         state.waiting = Math.max(0, state.waiting - 1)
         break
+      case 'user/message': {
+        // The prompt the user just sent is the bubble's text until the model says
+        // something: with an empty bubble the pet looks like it missed the message.
+        // Only a real user message counts — the turn also carries injected context
+        // (`runtime-context`, `model-selection`, `system-prompt`), and quoting that
+        // back at the user would be noise.
+        const source = event.data?.message?.source
+        if (source?.kind !== 'user') break
+        const text = blocksText(event.data?.message)
+        if (text !== '') state.prompt = text
+        break
+      }
+      case 'session/title': {
+        const title = event.data?.title
+        if (typeof title === 'string' && title !== '') state.title = title
+        break
+      }
       case 'assistant/message': {
         state.running = true
         const text = assistantText(event.data)
@@ -591,17 +636,34 @@ function wireAgentEvents(ctx, runtime) {
     }
   })
 
-  // Titles are generated asynchronously after the first prompt.
+  // Fallback for titles that already existed before this plugin attached: a rename or a
+  // generated title arrives as a durable `session/title` event, which the switch above
+  // handles for free, but a session opened earlier keeps its title in the session record
+  // and never re-emits it. The poll therefore only has work to do while some known session
+  // is still untitled, and it stops scanning the moment each one is filled in.
   ctx.effect(
     () => {
       const id = setInterval(() => {
+        let untitled = false
+        for (const state of runtime.agents.values()) {
+          if (state.title === '') { untitled = true; break }
+        }
+        // Nothing untitled: no session lookup at all, which keeps this timer inert for the
+        // whole time the pet is simply sitting next to an already-named conversation.
+        if (!untitled) return
+        const live = liveSessions(ctx)
+        let found = false
         for (const state of runtime.agents.values()) {
           if (state.title !== '') continue
-          for (const session of liveSessions(ctx)) {
+          for (const session of live) {
             const title = titleOf(session)
-            if (title !== '') state.title = title
+            if (title !== '') { state.title = title; found = true; break }
           }
         }
+        // Only when a title actually appeared: otherwise the push payload is unchanged and
+        // re-sending it every 5 s would be exactly the kind of idle work this pet must not
+        // do. A green bubble already on screen then catches up on the next real event.
+        if (found) runtime.lastSent = ''
       }, 5000)
       id.unref?.()
       return () => clearInterval(id)
@@ -619,20 +681,32 @@ function liveSessions(ctx) {
   }
 }
 
-/** Last assistant text already committed for this session (so the bubble has real copy at turn start). */
-function recentAssistantText(session) {
-  try {
-    const events = session.snapshotEvents()
-    const from = Math.max(0, events.length - 400)
-    for (let index = events.length - 1; index >= from; index--) {
-      const event = events[index]
-      if (event?.type !== 'assistant/message') continue
-      const text = assistantText(event.data)
-      if (text !== '') return text
-    }
-  } catch {
-    /* a session without a readable log just gets the fallback text */
+/** Concatenated text blocks of one message, flattened for the bubble. */
+function blocksText(message) {
+  const blocks = Array.isArray(message?.content) ? message.content : []
+  let text = ''
+  for (const block of blocks) {
+    if (block?.type === 'text' && typeof block.text === 'string') text += block.text
   }
+  return text
+}
+
+/**
+ * The one-line report for an abnormal turn end, or '' when the reason has nothing to say.
+ *
+ * `blocked` and `max-tokens` carry no message of their own, so they get a fixed phrase:
+ * the point of the red dot is that the turn stopped without an answer, and "why" only
+ * has to be as specific as the reason allows.
+ */
+function failureText(reason, title) {
+  const kind = reason?.kind
+  const name = title || '会话'
+  if (kind === 'error') {
+    const detail = bubbleText(reason.error?.message)
+    return detail === '' ? `“${name}”出错了` : detail
+  }
+  if (kind === 'blocked') return `“${name}”被中断了`
+  if (kind === 'max-tokens') return `“${name}”超出长度上限`
   return ''
 }
 
@@ -662,49 +736,101 @@ function pushState(ctx, runtime, profile) {
   if (Date.now() < runtime.balanceUntil) return
 
   const now = Date.now()
-  let mode = 'idle'
-  let text
+  // Housekeeping first: a session with nothing left to say is dropped so the map does not
+  // grow for the life of the process. This is the only mutation here; the decision itself
+  // is a pure function so it can be tested without a live Harness.
+  for (const [agentId, state] of runtime.agents) {
+    if (now - state.touched > FORGET_AFTER_MS) runtime.agents.delete(agentId)
+  }
+  const decision = decideBubble(runtime, now)
+  const payload = JSON.stringify({ t: 'state', mode: decision.mode, text: decision.text })
+  if (payload === runtime.lastSent) return
+  if (sendPet(runtime, { t: 'state', mode: decision.mode, text: decision.text })) runtime.lastSent = payload
+}
+
+/**
+ * Decides what the bubble should show right now: `{ mode, text }`.
+ *
+ * Exported so the priority rules can be tested directly. They have regressed twice, and a
+ * regex over the source cannot tell whether a session that went quiet for two minutes keeps
+ * its bubble — only running the rule can.
+ *
+ * Priority, highest first: waiting (yellow) > error (red) > done (green) > working (plain).
+ *
+ * Error sits between waiting and done because it is the only state describing a session that
+ * will not make progress on its own: a pending decision still outranks it (that one is
+ * answerable right now), while a red dot must not be hidden by any number of green
+ * completions — the user has to know something broke.
+ *
+ * Green outranks working on purpose. A session that just finished is the thing the user is
+ * waiting to hear about, and it would otherwise be drowned out by any other session that
+ * happens to be busy — the common case with several chats open.
+ *
+ * @param {{ agents: Map<string, { running: boolean, waiting: number, text: string, prompt: string, error: string, touched: number }>, doneText: string | null, doneAt: number }} state
+ * @param {number} now - wall clock, in the same units as `touched` / `doneAt`.
+ * @returns {{ mode: 'idle' | 'waiting' | 'error' | 'done' | 'working', text: string | undefined }}
+ */
+export function decideBubble(state, now) {
   let waitingAgent = null
   let runningAgent = null
+  let errorAgent = null
   // Each direction compares against its own timestamp. Sharing one accumulator made the
-  // running candidate inherit the waiting candidate's timestamp, so with no session
-  // waiting the accumulator stayed at its initial value and every running session passed
-  // the comparison — the last one inserted into the map won, whatever its actual activity.
-  // The bubble then narrated a session the user had already left.
+  // running candidate inherit the waiting candidate's timestamp, so with no session waiting
+  // the accumulator stayed at its initial value and every running session passed the
+  // comparison — the last one inserted into the map won, whatever its actual activity. The
+  // bubble then narrated a session the user had already left.
   let waitingTouched = -1
   let runningTouched = -1
-  for (const [agentId, state] of runtime.agents) {
-    if (now - state.touched > 60_000) continue
-    if (state.waiting > 0 && state.touched > waitingTouched) {
+  let errorTouched = -1
+  for (const [agentId, session] of state.agents) {
+    // A RUNNING session is never stale. The 60 s activity window exists so the bubble stops
+    // narrating a session the user walked away from, and applying it to a running session was
+    // what made the bubble vanish after a long silent stretch — a slow model, a long tool
+    // call, a big file being read all look identical to "nothing is happening" from here,
+    // while the turn is very much alive. A turn always ends with a durable `turn/end`, so
+    // this cannot get stuck; a manual interrupt is `aborted`, which clears `running`.
+    const fresh = now - session.touched <= ACTIVITY_WINDOW_MS
+    if (!fresh && !session.running) continue
+    if (session.waiting > 0 && session.touched > waitingTouched) {
       waitingAgent = agentId
-      waitingTouched = state.touched
+      waitingTouched = session.touched
     }
-    if (state.running && state.touched > runningTouched) {
+    // An error is a per-session fact that stays true until that session starts again, so it is
+    // selected from the session's own state rather than from a single global "last error":
+    // two sessions can be broken at once, and the newest one is the one the user just caused.
+    if (session.error !== '' && session.touched > errorTouched) {
+      errorAgent = agentId
+      errorTouched = session.touched
+    }
+    if (session.running && session.touched > runningTouched) {
       runningAgent = agentId
-      runningTouched = state.touched
+      runningTouched = session.touched
     }
-  }
-  // Priority, highest first: waiting (yellow) > done (green) > working (plain).
-  //
-  // The green completion state outranks working on purpose. A session that just finished is
-  // the thing the user is waiting to hear about, and it would otherwise be drowned out by any
-  // other session that happens to be busy — which is the common case with several chats open.
-  // It stays below waiting because a pending decision blocks that session and demands
-  // attention.
-  if (waitingAgent !== null) {
-    mode = 'waiting'
-    text = bubbleText(runtime.agents.get(waitingAgent).text) || '需要你确认一下'
-  } else if (runtime.doneText !== null && now - runtime.doneAt < DONE_VISIBLE_MS) {
-    mode = 'done'
-    text = runtime.doneText
-  } else if (runningAgent !== null) {
-    mode = 'working'
-    text = bubbleText(runtime.agents.get(runningAgent).text) || '正在工作…'
   }
 
-  const payload = JSON.stringify({ t: 'state', mode, text })
-  if (payload === runtime.lastSent) return
-  if (sendPet(runtime, { t: 'state', mode, text })) runtime.lastSent = payload
+  if (waitingAgent !== null) {
+    const session = state.agents.get(waitingAgent)
+    return { mode: 'waiting', text: bubbleText(session.text) || '需要你确认一下' }
+  }
+  if (errorAgent !== null && now - state.agents.get(errorAgent).touched < ERROR_VISIBLE_MS) {
+    const session = state.agents.get(errorAgent)
+    return { mode: 'error', text: bubbleText(session.error) || '会话出错了' }
+  }
+  if (state.doneText !== null && now - state.doneAt < DONE_VISIBLE_MS) {
+    return { mode: 'done', text: state.doneText }
+  }
+  if (runningAgent !== null) {
+    // Real assistant copy is preferred, but before the model has produced any this turn the
+    // bubble shows the prompt the user just sent. That is the same priority slot rather than a
+    // lower tier, so the text does not flicker to a placeholder and back when the stream
+    // starts.
+    const session = state.agents.get(runningAgent)
+    return {
+      mode: 'working',
+      text: bubbleText(session.text) || bubbleText(session.prompt) || '正在工作…',
+    }
+  }
+  return { mode: 'idle', text: undefined }
 }
 
 function bubbleText(raw) {

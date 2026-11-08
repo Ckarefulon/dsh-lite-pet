@@ -109,6 +109,37 @@ namespace DshLitePet
         protected abstract string WindowTitle { get; }
         protected abstract IntPtr OnMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+        /// <summary>
+        /// Installed by the pet so that every "raise me" goes through ONE place that knows
+        /// the whole stack (pet ▸ bubble ▸ menu).
+        ///
+        /// Raising a single window cannot express a stacking order. Within the topmost band
+        /// Windows orders windows by whichever was raised last, so the pet being raised on a
+        /// drag buried a bubble that had been raised earlier, and the bubble repainting
+        /// while the menu was open buried the menu. Routing every raise through the owner
+        /// is what makes the order an invariant instead of a race.
+        /// </summary>
+        internal static Action RestackRequest;
+
+        /// <summary>
+        /// Raises this window, asking the owner to restack the whole band when it can.
+        /// Falls back to a plain raise so the surfaces still work on their own.
+        /// </summary>
+        protected void Raise()
+        {
+            Action restack = RestackRequest;
+            if (restack != null) { restack(); return; }
+            RaiseRaw();
+        }
+
+        /// <summary>Raises this window without consulting the stack. Only the owner calls this.</summary>
+        internal void RaiseRaw()
+        {
+            if (Hwnd == IntPtr.Zero) return;
+            Native.SetWindowPos(Hwnd, (IntPtr)Native.HWND_TOPMOST, 0, 0, 0, 0,
+                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
+        }
+
         /// <summary>Registers the class once per process and creates the window, hidden.</summary>
         protected void CreateWindow(int width, int height)
         {

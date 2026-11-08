@@ -48,6 +48,7 @@ namespace DshLitePet
 
         private static readonly Color DotWaiting = Color.FromArgb(255, 245, 183, 0);
         private static readonly Color DotDone = Color.FromArgb(255, 46, 204, 113);
+        private static readonly Color DotError = Color.FromArgb(255, 231, 76, 60);
 
 
         private int _height = DefaultHeight;
@@ -257,7 +258,9 @@ namespace DshLitePet
                 {
                     int dotX = boxX + Margin;
                     int dotY = (boxHeight - DotSize) / 2;
-                    Color color = dot == BubbleDot.Waiting ? DotWaiting : DotDone;
+                    Color color = dot == BubbleDot.Waiting ? DotWaiting
+                        : dot == BubbleDot.Error ? DotError
+                        : DotDone;
                     using (var brush = new SolidBrush(color))
                         Graphics.FillEllipse(brush, dotX, dotY, DotSize, DotSize);
                 }
@@ -299,12 +302,25 @@ namespace DshLitePet
         /// band by whoever was raised last. The pet is raised whenever it is dragged or
         /// resized, which would otherwise put it in front of its own bubble — visible as
         /// soon as the bubble is dragged down over the pet's body.
+        ///
+        /// This goes through <see cref="Raise"/>, so the pet can restack the whole band in
+        /// one step: raising only the bubble here is what let the pet and the menu bury it.
         /// </summary>
         internal void BringToTop()
         {
             if (Hwnd == IntPtr.Zero || !_visible) return;
-            Native.SetWindowPos(Hwnd, (IntPtr)(-1), 0, 0, 0, 0,
-                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
+            Raise();
+        }
+
+        /// <summary>
+        /// Raises the bubble only when it is on screen. Called by <see cref="Program.Restack"/>
+        /// while rebuilding the whole stack, where the bubble may well be hidden — there is no
+        /// text to show, and raising a hidden window is pointless work on every drag move.
+        /// </summary>
+        internal void RaiseWhenVisible()
+        {
+            if (Hwnd == IntPtr.Zero || !_visible) return;
+            RaiseRaw();
         }
 
         /// <summary>Moves the window to its anchor plus the current offset.</summary>

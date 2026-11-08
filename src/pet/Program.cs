@@ -153,6 +153,11 @@ namespace DshLitePet
                     // receiving the movement for the rest of the gesture.
                     Native.SetCapture(_hwnd);
                 };
+                // Every raise in the process goes through Restack, which knows the whole
+                // stacking order (pet ▸ bubble ▸ menu). See Restack for why a single-window
+                // raise is not enough on topmost windows.
+                LayeredPopup.RestackRequest = Restack;
+
                 _ipc = new Ipc();
                 _ipc.Start();
 
@@ -243,6 +248,31 @@ namespace DshLitePet
             _settings.BubbleOffsetY = _bubble.OffsetY;
             _settings.Save();
         }
+
+        /// <summary>
+        /// Re-establishes the stacking order of the pet's three topmost windows.
+        ///
+        /// There is no way to ask Windows for "this window, but always below that one" on
+        /// topmost windows: the band is ordered by whichever window was raised last, so any
+        /// single raise silently demotes everything else in it. Raising the pet on a drag
+        /// therefore buried the bubble, and the bubble repainting while the menu was open
+        /// buried the menu — both reported as "上下层级有时候还是被宠物压着了".
+        ///
+        /// The order is rebuilt in one place instead. `SetWindowPos(HWND_TOPMOST)` puts the
+        /// named window at the FRONT of the band, so raising front-to-back would invert the
+        /// result; the windows are raised back-to-front, which leaves the pet at the back,
+        /// the bubble above it, and an open menu above both.
+        /// </summary>
+        private static void Restack()
+        {
+            if (_hwnd == IntPtr.Zero) return;
+            // Back of the band first, front last. Both satellites skip themselves when they
+            // are not on screen, so a drag with no bubble showing costs one call.
+            Native.SetWindowPos(_hwnd, (IntPtr)(-1), 0, 0, 0, 0,
+                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
+            if (_bubble != null) _bubble.RaiseWhenVisible();
+            if (_menu != null) _menu.RaisePopup();
+        }
         /// <summary>Keeps at least a sliver of the window inside the work area (a saved position can go stale).</summary>
         private static void ClampToWorkArea(Native.RECT work)
         {
@@ -282,9 +312,10 @@ namespace DshLitePet
             _settings.Save();
             Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, _windowWidth, _windowHeight,
                 Native.SWP_NOACTIVATE);
-            // After the pet is raised, not before: PositionBubble lifts the bubble
-            // above it, and doing this the other way round buries the bubble.
+            // Scale changes resize the pet, which raises it in front of its own bubble. Put the
+            // stack back in order rather than relying on PositionBubble to undo the damage.
             PositionBubble();
+            Restack();
             Present();
         }
 
@@ -454,10 +485,16 @@ namespace DshLitePet
                 if (nx == _windowX && ny == _windowY) return;
                 _windowX = nx;
                 _windowY = ny;
+                // Move WITHOUT raising, then restack. SetWindowPos on the pet while dragging
+                // was the single most common way the bubble ended up underneath it: every
+                // one of these moves put the pet at the front of the topmost band.
                 Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, 0, 0,
                     Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
                 // The bubble has to follow the pet it belongs to.
                 PositionBubble();
+                // PositionBubble repaints the bubble, and the repaint raises it; putting the
+                // pet back behind it keeps the order stable for the whole drag.
+                Restack();
                 return;
             }
         }
@@ -1016,6 +1053,18 @@ namespace DshLitePet
                 SetBubble(text, BubbleDot.Done);
                 _playingAmbient = false;
                 if (_currentKind != "work-done") PlayKind("work-done", false, 0);
+                return;
+            }
+            if (_mode == "error")
+            {
+                _bubbleHideAt = -1;
+                SetBubble(text, BubbleDot.Error);
+                _playingAmbient = false;
+                // Like "done": the reaction plays once, then OnClipEnd returns the pet to idle.
+                // The host only re-pushes a state when the payload changes, so this cannot
+                // restart the clip on the next tick — and the red bubble outlives the reaction,
+                // which is the point: it stays until the session moves on or the user clicks.
+                if (_currentKind != "work-error") PlayKind("work-error", false, 0);
                 return;
             }
             if (_mode == "balance")
