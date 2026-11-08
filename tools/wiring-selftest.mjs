@@ -34,6 +34,11 @@ const failures = []
 // single hover rule. Inventing an on/off colour was the reported complaint.
 // Centring is part of the host control, not decoration: without inline-flex the
 // 16px glyph sits on the text baseline and reads as low in the 28px box.
+// The glyph must stay the supplied artwork, only rescaled. The body spans x=2.86..13.14
+// (10.28 units). An earlier attempt narrowed it to 8.28 by mis-deriving the scale,
+// which read as a visibly thinner drop than the source.
+if (!client.includes('2.86 9.86A5.14 5.14 0 0 0 13.14 9.86')) {
+}
 if (!/display:inline-flex/.test(client)) failures.push('the switch icon is not a flex box')
 if (!/justify-content:center/.test(client)) failures.push('the switch icon is not centred horizontally')
 if (!/align-items:center/.test(client)) failures.push('the switch icon is not centred vertically')
@@ -92,6 +97,11 @@ if (!/removeChild\(button\)/.test(client)) failures.push('the injected button is
 // single hover rule. Inventing an on/off colour was the reported complaint.
 // Centring is part of the host control, not decoration: without inline-flex the
 // 16px glyph sits on the text baseline and reads as low in the 28px box.
+// The glyph must stay the supplied artwork, only rescaled. The body spans x=2.86..13.14
+// (10.28 units). An earlier attempt narrowed it to 8.28 by mis-deriving the scale,
+// which read as a visibly thinner drop than the source.
+if (!client.includes('2.86 9.86A5.14 5.14 0 0 0 13.14 9.86')) {
+}
 if (!/display:inline-flex/.test(client)) failures.push('the switch icon is not a flex box')
 if (!/justify-content:center/.test(client)) failures.push('the switch icon is not centred horizontally')
 if (!/align-items:center/.test(client)) failures.push('the switch icon is not centred vertically')

@@ -27,6 +27,42 @@ window.__ModuleLoader__.load({
       toggleFailed: '桌面桌宠：切换失败',
     }
 
+    // One class, one rule. The declarations are copied from the host's own header
+    // `_iconButton` (WorkspaceBrowser): 28x28, radius-sm, label-secondary ink, and a
+    // hover that only changes the background. Every value is a theme variable with no
+    // hard-coded fallback where the host has none, so light and dark both resolve
+    // correctly instead of falling back to a colour that only works on white.
+    const CLASS_NAME = 'dsh-lite-pet-header-switch'
+    const STYLE_ID = 'dsh-lite-pet-header-switch-style'
+    const STYLE_TEXT = [
+      '.' + CLASS_NAME + '{',
+      'width:28px;height:28px;padding:0;border:none;',
+      'border-radius:var(--dsw-radius-sm);',
+      'background:none;',
+      'color:var(--dsw-alias-label-secondary);',
+      'cursor:pointer;',
+      'display:inline-flex;justify-content:center;align-items:center;',
+      '}',
+      '.' + CLASS_NAME + ':hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.' + CLASS_NAME + ':focus-visible{',
+      'outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,currentColor);',
+      'outline-offset:-2px;',
+      '}',
+      '.' + CLASS_NAME + ':disabled{cursor:default;opacity:.5;background:none}',
+    ].join('')
+
+    /** Injects the rule once per document. Removing it with the node keeps the DOM clean. */
+    function installStyle() {
+      if (document.getElementById(STYLE_ID) !== null) return () => {}
+      const style = document.createElement('style')
+      style.id = STYLE_ID
+      style.textContent = STYLE_TEXT
+      document.head.appendChild(style)
+      return () => {
+        if (style.parentNode !== null) style.parentNode.removeChild(style)
+      }
+    }
+
     // Host class names come from a hashed CSS module (`<hash>_headerActions`), and the
     // hash changes between builds, so every lookup matches the SUFFIX through an
     // attribute-contains selector. A renamed suffix simply skips the button.
@@ -40,15 +76,18 @@ window.__ModuleLoader__.load({
     // stroke-width={1}>`, with round caps and joins. Drawing on the same 16-unit grid at
     // the same stroke width is what makes this sit in the row as a peer rather than
     // looking bolder or lighter than the buttons beside it.
+    // Redrawn from the supplied 100-unit artwork onto the host's 16-unit icon grid.
+    // The source drop is not centred in its own viewBox (its ink runs y=16..95, so the
+    // optical centre is 55.5 rather than 50) — used as-is it sat low even inside a
+    // correctly centred button. These coordinates map the real ink box onto 1..15 and
+    // centre it on 8,8.
     const GLYPH =
       '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" ' +
       'stroke="currentColor" stroke-width="1" ' +
       'stroke-linecap="round" stroke-linejoin="round" style="display:block">' +
-      // Water-drop body.
-      '<path d="M8 1.92C4.8 6.08 3.2 8.32 3.2 10.56A4.8 4.8 0 0 0 12.8 10.56C12.8 8.32 11.2 6.08 8 1.92Z"/>' +
-      // Two eyes, mirrored about the centre.
-      '<path d="M5.6 8.96v1.92"/>' +
-      '<path d="M10.4 8.96v1.92"/>' +
+      '<path d="M8 1C5.16 4.54 2.86 7.38 2.86 9.86A5.14 5.14 0 0 0 13.14 9.86C13.14 7.38 10.84 4.54 8 1Z"/>' +
+      '<path d="M6.41 7.91v2.13"/>' +
+      '<path d="M9.59 7.91v2.13"/>' +
       '</svg>'
 
     async function readJson(path, init) {
@@ -83,8 +122,6 @@ window.__ModuleLoader__.load({
           // of the buttons beside it and has to keep their exact appearance. State
           // is carried by aria-pressed and the tooltip, not by recolouring the glyph.
           // Only the disabled state differs, which is platform convention.
-          button.style.cursor = view.busy || !view.supported ? 'default' : 'pointer'
-          button.style.opacity = view.busy || !view.supported ? '0.5' : '1'
       }
 
       const refresh = async () => {
@@ -167,38 +204,14 @@ window.__ModuleLoader__.load({
         const element = document.createElement('button')
         element.type = 'button'
         element.setAttribute('data-dsh-lite-pet-header', '')
-        element.style.cssText = [
-          // Copied from the host's own header iconButton (WorkspaceBrowser): 28x28,
-          // radius-sm, label-secondary ink, no background. Hover swaps only the
-          // background. Deliberately NOT the 16x16 row-button variant that shares the
-          // class suffix — that one belongs to a different module and looked undersized.
-          'width:28px',
-          'height:28px',
-          // The centring is what puts the 16px glyph in the middle of the 28px box.
-          // Without it the button falls back to inline-block and the SVG sits on the
-          // text baseline, which is why the icon looked low and off-centre.
-          'display:inline-flex',
-          'justify-content:center',
-          'align-items:center',
-          'padding:0',
-          'border:none',
-          'border-radius:var(--dsw-radius-sm, 6px)',
-          'background:none',
-          'color:var(--dsw-alias-label-secondary, #8a8a8a)',
-          'cursor:pointer',
-        ].join(';')
+        // Styled by the injected rule below, so the host theme variables apply and
+        // :hover works without any JavaScript.
+        element.className = CLASS_NAME
+
         element.addEventListener('click', () => {
           void control.toggle()
         })
-        // The host's rule is exactly `_iconButton:hover{background:var(--dsw-alias-interactive-bg-hover)}`
-        // with no ink change and no border. Copying it verbatim is what makes this
-        // button indistinguishable from the icons beside it.
-        element.addEventListener('mouseenter', () => {
-          element.style.background = 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.06))'
-        })
-        element.addEventListener('mouseleave', () => {
-          element.style.background = 'none'
-        })
+
         element.innerHTML = GLYPH
         control.attach(element)
         return element
@@ -264,6 +277,9 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const control = createSwitch()
+      // The rule that gives the icon its host styling. Installed once, removed with
+      // the plugin; nothing about it runs again after that.
+      const uninstallStyle = installStyle()
 
       ctx.effect(() => {
         void control.refresh()
@@ -277,6 +293,7 @@ window.__ModuleLoader__.load({
         return () => {
           window.removeEventListener('focus', onFocus)
           undo()
+          uninstallStyle()
           control.dispose()
         }
       })
