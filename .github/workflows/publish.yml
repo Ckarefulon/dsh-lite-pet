@@ -68,6 +68,13 @@ jobs:
       - name: Verify the playback contract
         run: node tools/playback-selftest.mjs
 
+      # Guards the host/client wiring: `connection` must be acquired through
+      # `ctx.inject` (a synchronous `get` at apply time returns undefined and every
+      # route silently fails to register), the sidebar button must use suffix-matched
+      # DOM augmentation with a full undo, and there must be exactly one in-app switch.
+      - name: Verify the host/client wiring
+        run: node tools/wiring-selftest.mjs
+
       # The release asset goes up BEFORE the npm publish. It is what every new install
       # downloads on first run, so it must not be hostage to a flaky registry call:
       # when npm failed, this step never ran and the tag shipped with no asset at all.

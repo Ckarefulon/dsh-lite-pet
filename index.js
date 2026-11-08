@@ -867,43 +867,38 @@ async function reopenHidden(ctx, runtime) {
 // ——— browser routes ————————————————————————————————————————————————————
 
 function wireRoutes(ctx, runtime, profile) {
-  const connection = (() => {
-    try {
-      return ctx.get('connection', false)
-    } catch {
-      return undefined
-    }
-  })()
-  if (connection === undefined || connection === null) return
-  const fetchRoutes = connection.fetch
-  if (fetchRoutes === undefined || typeof fetchRoutes.register !== 'function') return
+  // `connection` is acquired through `ctx.inject`, not a synchronous `ctx.get` here.
+  // At `apply` time the service tree is still being assembled, so a `get` returns
+  // undefined and every route silently never registers — the settings row then
+  // renders normally but its fetch gets a 401 from the `/api` fence, which is what
+  // "读取状态失败" looked like. `inject` runs the callback once the service exists,
+  // and the returned fiber is disposed with the plugin.
+  ctx.inject(['connection'], (scope) => {
+    const connection = scope.get('connection')
+    if (connection === undefined || connection === null) return () => {}
+    const fetchRoutes = connection.fetch
+    if (fetchRoutes === undefined || typeof fetchRoutes.register !== 'function') return () => {}
 
-  const json = (body, status = 200) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    const json = (body, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+      })
+
+    const snapshot = () => ({
+      ok: true,
+      supported: process.platform === 'win32',
+      enabled: runtime.pet !== null || runtime.enabled,
+      running: runtime.pet !== null && runtime.ready,
     })
 
-  const snapshot = () => ({
-    ok: true,
-    supported: process.platform === 'win32',
-    enabled: runtime.pet !== null || runtime.enabled,
-    running: runtime.pet !== null && runtime.ready,
-  })
-
-  ctx.effect(
-    () =>
+    const disposers = [
       fetchRoutes.register({
         path: STATE_ROUTE,
         methods: ['GET'],
         requestBody: 'buffered',
         fetch: () => Promise.resolve(json(snapshot())),
       }),
-    'dsh-lite-pet: state route',
-  )
-
-  ctx.effect(
-    () =>
       fetchRoutes.register({
         path: ENABLED_ROUTE,
         methods: ['POST'],
@@ -933,8 +928,17 @@ function wireRoutes(ctx, runtime, profile) {
           return json({ ...snapshot(), ok: true })
         },
       }),
-    'dsh-lite-pet: enabled route',
-  )
+    ]
+    return () => {
+      for (const dispose of disposers) {
+        try {
+          if (typeof dispose === 'function') dispose()
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+  })
 }
 
 function stopPet(runtime) {
