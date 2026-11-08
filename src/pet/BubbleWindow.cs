@@ -179,6 +179,14 @@ namespace DshLitePet
                 Native.ShowWindow(Hwnd, Native.SW_SHOWNOACTIVATE);
             }
             Reposition();
+            // Reposition already lifts this window above the pet, but only when it can
+            // compute a position. A height change from Paint resizes the window through
+            // UpdateLayeredWindow, and that can drop it behind the pet, so the raise is
+            // also issued here — Reposition's own lift then becomes a no-op reorder that
+            // Windows collapses.
+            // the pet, which is also topmost. Reposition lifts it, but a paint-only update
+            // would not, so the raise is repeated here as the final step of every update.
+            BringToTop();
         }
 
         internal void Hide()
@@ -260,6 +268,10 @@ namespace DshLitePet
             }
 
             Present(_bubbleX, _bubbleY);
+            // A height change makes UpdateLayeredWindow resize the window, and a resize can
+            // put it behind the pet. Raising here, right after the resize, is what keeps a
+            // growing bubble from being covered the moment it gains a second line.
+            if (_visible) BringToTop();
         }
 
         /// <summary>Screen position last used, so Paint can upload without recomputing it.</summary>
