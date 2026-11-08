@@ -31,7 +31,7 @@ if (/AnimationBase\s*\+\s*index/.test(menu)) {
 }
 
 // `_commands.Clear()` inside Show is harmless, but the map must be keyed by that id.
-if (!/_commands\[itemCommand\]\s*=\s*entry/.test(menu)) {
+if (!/_commands\[command\]\s*=\s*entry/.test(menu)) {
   failures.push('Menu.cs does not record the entry under its unique command id')
 }
 

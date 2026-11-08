@@ -22,10 +22,19 @@ namespace DshLitePet
         public const int WM_NCHITTEST = 0x0084;
         public const int WM_MOUSEMOVE = 0x0200;
         public const int WM_LBUTTONDOWN = 0x0201;
+        public const int WM_RBUTTONDOWN = 0x0204;
+        public const uint WM_QUIT = 0x0012;
         public const int WM_LBUTTONUP = 0x0202;
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_TIMER = 0x0113;
         public const int WM_NULL = 0x0000;
+        public const int WM_CANCELMODE = 0x001F;
+        public const int WM_ACTIVATE = 0x0006;
+        public const int WM_ACTIVATEAPP = 0x001C;
+        public const int WA_INACTIVE = 0;
+        public const int WM_MOUSEACTIVATE_ = 0x0021;
+        /// <summary>Sent when the mouse that was captured by this window goes elsewhere.</summary>
+        public const int WM_CAPTURECHANGED_ = 0x0215;
         public const int WM_SETCURSOR = 0x0020;
         public const int WM_CAPTURECHANGED = 0x0215;
         public const int WM_DESTROY = 0x0002;
@@ -122,6 +131,12 @@ namespace DshLitePet
         [DllImport("user32.dll")]
         public static extern bool GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
 
+        [DllImport("user32.dll")]
+        public static extern bool PeekMessage(out MSG msg, IntPtr hwnd, uint min, uint max, uint remove);
+
+        public const uint PM_REMOVE = 0x0001;
+        public const uint PM_NOREMOVE = 0x0000;
+
 
         [DllImport("user32.dll")]
         public static extern bool TranslateMessage(ref MSG msg);
@@ -204,6 +219,31 @@ namespace DshLitePet
         public static extern int TrackPopupMenuEx(IntPtr menu, uint flags, int x, int y, IntPtr hwnd, IntPtr paramsPtr);
 
         [DllImport("user32.dll")]
+        public static extern bool EndMenu();
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern IntPtr FindWindow(string className, string windowName);
+
+        // Virtual-key codes used by the menu watcher.
+        public const int VK_LBUTTON = 0x01;
+        public const int VK_RBUTTON = 0x02;
+        public const int VK_MBUTTON = 0x04;
+        public const int VK_ESCAPE = 0x1B;
+        public const int WM_KEYDOWN = 0x0100;
+        public const int WM_KEYUP = 0x0101;
+
+        /// <summary>True while the physical key is down (high bit), regardless of focus.</summary>
+        public static bool IsKeyDown(int vKey)
+        {
+            return (GetAsyncKeyState(vKey) & 0x8000) != 0;
+        }
+
+        public static bool PtInRect(ref RECT rect, Native.POINT point)
+        {
+            return point.X >= rect.Left && point.X < rect.Right && point.Y >= rect.Top && point.Y < rect.Bottom;
+        }
+
+        [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hwnd);
 
         [DllImport("user32.dll")]
@@ -211,6 +251,9 @@ namespace DshLitePet
 
         [DllImport("user32.dll")]
         public static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetCapture();
 
 
         [DllImport("user32.dll")]
@@ -256,11 +299,15 @@ namespace DshLitePet
         public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
-        public static extern bool AttachThreadInput(uint attachTo, uint attachFrom,
-            [MarshalAs(UnmanagedType.Bool)] bool attach);
+        public static extern bool PostThreadMessage(uint threadId, uint msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("kernel32.dll")]
         public static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint attachTo, uint attachFrom,
+            [MarshalAs(UnmanagedType.Bool)] bool attach);
+
 
         // ——— ShellExecute: the only reliable way to fire the dsh: protocol ——————
         // Measured on this machine: `cmd /c start "" dsh://open` did nothing, and

@@ -19,9 +19,12 @@ using System.Runtime.InteropServices;
 
 namespace DshLitePet
 {
-    internal sealed class BubbleWindow : IDisposable
+    internal sealed class BubbleWindow : LayeredPopup
     {
-        private const string WindowClass = "DshLitePetBubble";
+        private const string BubbleClass = "DshLitePetBubble";
+
+        protected override string WindowClass { get { return BubbleClass; } }
+        protected override string WindowTitle { get { return "dsh-lite-pet-bubble"; } }
 
         /// <summary>
         /// Hard cap on the bubble width. A speech bubble is a glanceable hint, so a long
@@ -46,13 +49,7 @@ namespace DshLitePet
         private static readonly Color DotWaiting = Color.FromArgb(255, 245, 183, 0);
         private static readonly Color DotDone = Color.FromArgb(255, 46, 204, 113);
 
-        private static readonly Native.WndProcDelegate WndProcThunk = WndProc;
-        private static bool _classRegistered;
 
-        private IntPtr _hwnd;
-        private Native.LayeredSurface _surface;
-        private readonly Bitmap _bitmap;
-        private readonly Graphics _graphics;
         private int _height = DefaultHeight;
         private string _drawnText;
         private BubbleDot _drawnDot;
@@ -78,14 +75,12 @@ namespace DshLitePet
 
         internal BubbleWindow()
         {
-            _bitmap = new Bitmap(Width, MaxHeight, PixelFormat.Format32bppPArgb);
-            _graphics = Graphics.FromImage(_bitmap);
-            _graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            _graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            // No bitmap here: EnsureSurface allocates on the first paint, so
+            // constructing the bubble costs nothing until there is text to show.
             _current = this;
         }
 
-        internal IntPtr Handle { get { return _hwnd; } }
+        internal IntPtr Handle { get { return Hwnd; } }
 
         internal bool Visible { get { return _visible; } }
 
@@ -95,25 +90,9 @@ namespace DshLitePet
         /// <summary>Creates the window; it starts hidden and is shown once there is text.</summary>
         internal void Create()
         {
-            IntPtr instance = Native.GetModuleHandle(null);
-            if (!_classRegistered)
-            {
-                var wc = new Native.WNDCLASSEX
-                {
-                    cbSize = Marshal.SizeOf(typeof(Native.WNDCLASSEX)),
-                    lpfnWndProc = Marshal.GetFunctionPointerForDelegate(WndProcThunk),
-                    hInstance = instance,
-                    lpszClassName = WindowClass,
-                    hCursor = Native.LoadCursor(IntPtr.Zero, (IntPtr)32512),
-                };
-                Native.RegisterClassEx(ref wc);
-                _classRegistered = true;
-            }
-            _hwnd = Native.CreateWindowEx(
-                Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOPMOST,
-                WindowClass, "dsh-lite-pet-bubble", Native.WS_POPUP,
-                0, 0, Width, _height, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
-            _surface = new Native.LayeredSurface(Width, _height);
+            // The window class, the window and the surface all come from the shared
+            // base; the bubble only supplies its class name and its painting.
+            CreateWindow(Width, _height);
         }
 
         /// <summary>
@@ -127,7 +106,7 @@ namespace DshLitePet
             if (_bubbleVisibleSafe()) Reposition();
         }
 
-        private bool _bubbleVisibleSafe() { return _visible && _hwnd != IntPtr.Zero; }
+        private bool _bubbleVisibleSafe() { return _visible && Hwnd != IntPtr.Zero; }
 
         /// <summary>
         /// The bubble's resting top edge: centred on the pet, sitting just above its head.
@@ -179,7 +158,7 @@ namespace DshLitePet
         /// </summary>
         internal void Update(string text, BubbleDot dot)
         {
-            if (_hwnd == IntPtr.Zero) return;
+            if (Hwnd == IntPtr.Zero) return;
             if (text == null || text.Length == 0)
             {
                 Hide();
@@ -197,7 +176,7 @@ namespace DshLitePet
             if (!_visible)
             {
                 _visible = true;
-                Native.ShowWindow(_hwnd, Native.SW_SHOWNOACTIVATE);
+                Native.ShowWindow(Hwnd, Native.SW_SHOWNOACTIVATE);
             }
             Reposition();
         }
@@ -206,7 +185,7 @@ namespace DshLitePet
         {
             if (!_visible) return;
             _visible = false;
-            Native.ShowWindow(_hwnd, Native.SW_HIDE);
+            Native.ShowWindow(Hwnd, Native.SW_HIDE);
             _drawnText = null;
             _drawnDot = BubbleDot.None;
         }
@@ -223,7 +202,7 @@ namespace DshLitePet
         internal Native.RECT ScreenRect()
         {
             var rect = new Native.RECT();
-            if (_hwnd != IntPtr.Zero) Native.GetWindowRect(_hwnd, ref rect);
+            if (Hwnd != IntPtr.Zero) Native.GetWindowRect(Hwnd, ref rect);
             return rect;
         }
 
@@ -238,68 +217,55 @@ namespace DshLitePet
             Font font = BubbleFont();
             int textLeft = Margin + DotSize + 8;
             int maxTextWidth = Width - textLeft - 12;
-            var format = new StringFormat(StringFormatFlags.NoWrap);
-            format.Trimming = StringTrimming.EllipsisCharacter;
-            SizeF measured = _graphics.MeasureString(text, font, new SizeF(maxTextWidth, 400), format);
-            int lines = Math.Max(1, (int)Math.Ceiling(measured.Height / font.GetHeight()));
-            if (lines > MaxLines) measured.Height = font.GetHeight() * MaxLines + 2;
-            int boxHeight = (int)Math.Ceiling(measured.Height) + 16;
-            if (boxHeight > MaxHeight) boxHeight = MaxHeight;
-            if (boxHeight < DefaultHeight) boxHeight = DefaultHeight;
-            int boxWidth = (int)Math.Ceiling(measured.Width) + textLeft + 12;
-            if (boxWidth < 96) boxWidth = 96;
-            if (boxWidth > Width) boxWidth = Width;
-            int boxX = (Width - boxWidth) / 2;
-            int previousHeight = _height;
-            _height = boxHeight;
-
-            _graphics.Clear(Color.Transparent);
-            using (var path = RoundedRect(new Rectangle(boxX, 0, boxWidth, boxHeight), CornerRadius))
-            using (var fill = new SolidBrush(Color.FromArgb(255, 252, 252, 252)))
-            using (var border = new Pen(Color.FromArgb(34, 0, 0, 0), 1f))
+            using (var format = new StringFormat(StringFormatFlags.NoWrap))
             {
-                _graphics.FillPath(fill, path);
-                _graphics.DrawPath(border, path);
+                format.Trimming = StringTrimming.EllipsisCharacter;
+
+                // Measure before any surface exists: the base allocates lazily, so a
+                // throwaway text context is used for this step.
+                SizeF measured;
+                using (var measure = System.Drawing.Graphics.FromHwnd(IntPtr.Zero))
+                    measured = measure.MeasureString(text, font, new SizeF(maxTextWidth, 400), format);
+                int lines = Math.Max(1, (int)Math.Ceiling(measured.Height / font.GetHeight()));
+                if (lines > MaxLines) measured.Height = font.GetHeight() * MaxLines + 2;
+                int boxHeight = (int)Math.Ceiling(measured.Height) + 16;
+                if (boxHeight > MaxHeight) boxHeight = MaxHeight;
+                if (boxHeight < DefaultHeight) boxHeight = DefaultHeight;
+                int boxWidth = (int)Math.Ceiling(measured.Width) + textLeft + 12;
+                if (boxWidth < 96) boxWidth = 96;
+                if (boxWidth > Width) boxWidth = Width;
+                int boxX = (Width - boxWidth) / 2;
+                _height = boxHeight;
+
+                EnsureSurface(Width, _height);
+
+                // Dark desktops get a dark bubble; the theme is shared with the menu and
+                // cached in the base, so this costs nothing per paint.
+                SurfaceTheme theme = SurfaceTheme.Current();
+                Graphics.Clear(Color.Transparent);
+                DrawPanel(new Rectangle(boxX, 0, boxWidth, boxHeight), CornerRadius, theme);
+
+                if (dot != BubbleDot.None)
+                {
+                    int dotX = boxX + Margin;
+                    int dotY = (boxHeight - DotSize) / 2;
+                    Color color = dot == BubbleDot.Waiting ? DotWaiting : DotDone;
+                    using (var brush = new SolidBrush(color))
+                        Graphics.FillEllipse(brush, dotX, dotY, DotSize, DotSize);
+                }
+
+                var textRect = new RectangleF(boxX + textLeft, 8, maxTextWidth, boxHeight - 12);
+                using (var ink = new SolidBrush(theme.Text))
+                    Graphics.DrawString(text, font, ink, textRect, format);
             }
 
-            if (dot != BubbleDot.None)
-            {
-                int dotX = boxX + Margin;
-                int dotY = (boxHeight - DotSize) / 2;
-                Color color = dot == BubbleDot.Waiting ? DotWaiting : DotDone;
-                using (var brush = new SolidBrush(color))
-                    _graphics.FillEllipse(brush, dotX, dotY, DotSize, DotSize);
-            }
-
-            var textRect = new RectangleF(boxX + textLeft, 8, maxTextWidth, boxHeight - 12);
-            using (var ink = new SolidBrush(Color.FromArgb(255, 26, 26, 26)))
-                _graphics.DrawString(text, font, ink, textRect, format);
-
-            if (boxHeight != previousHeight || _surface == null)
-            {
-                if (_surface != null) _surface.Dispose();
-                _surface = new Native.LayeredSurface(Width, _height);
-                Native.SetWindowPos(_hwnd, (IntPtr)(-1), 0, 0, Width, _height,
-                    Native.SWP_NOMOVE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
-            }
-
-            BitmapData data = _bitmap.LockBits(new Rectangle(0, 0, Width, _height),
-                ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
-            try { _surface.UploadRows(data.Scan0, data.Stride, Width * 4, _height); }
-            finally { _bitmap.UnlockBits(data); }
+            Present(_bubbleX, _bubbleY);
         }
 
-        private static GraphicsPath RoundedRect(Rectangle r, int radius)
-        {
-            var path = new GraphicsPath();
-            int d = radius * 2;
-            path.AddArc(r.X, r.Y, d, d, 180, 90);
-            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-            path.CloseFigure();
-            return path;
-        }
+        /// <summary>Screen position last used, so Paint can upload without recomputing it.</summary>
+        private int _bubbleX;
+        private int _bubbleY;
+
 
         /// <summary>
         /// The system UI face at its standard size. It was enlarged once to answer a
@@ -324,22 +290,24 @@ namespace DshLitePet
         /// </summary>
         internal void BringToTop()
         {
-            if (_hwnd == IntPtr.Zero || !_visible) return;
-            Native.SetWindowPos(_hwnd, (IntPtr)(-1), 0, 0, 0, 0,
+            if (Hwnd == IntPtr.Zero || !_visible) return;
+            Native.SetWindowPos(Hwnd, (IntPtr)(-1), 0, 0, 0, 0,
                 Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
         }
 
         /// <summary>Moves the window to its anchor plus the current offset.</summary>
         private void Reposition()
         {
-            if (_hwnd == IntPtr.Zero || !_visible) return;
+            if (Hwnd == IntPtr.Zero || !_visible) return;
             int left = _hasPet ? _pet.Left + ((_pet.Right - _pet.Left) - Width) / 2 : 0;
             int top = RestTop() + OffsetY;
             // Stay above the pet: it is raised on every drag, and the bubble has to follow.
             BringToTop();
             // UpdateLayeredWindow both moves and repaints; a separate SetWindowPos is not
             // needed and, when the size is left to it, can disagree with the DIB.
-            _surface.Present(_hwnd, left, top);
+            _bubbleX = left;
+            _bubbleY = top;
+            Present(left, top);
         }
 
         private static int CursorY()
@@ -383,7 +351,7 @@ namespace DshLitePet
         /// The bubble handles its own mouse input, because it is a separate window: a drag
         /// here adjusts <see cref="OffsetY"/>, which is the only state that moves it.
         /// </summary>
-        private static IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+        protected override IntPtr OnMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
         {
             switch (msg)
             {
@@ -418,16 +386,10 @@ namespace DshLitePet
             return Native.DefWindowProc(hwnd, msg, wParam, lParam);
         }
 
+        /// <summary>The base disposes the window and the drawing surface.</summary>
         public void Dispose()
         {
-            if (_hwnd != IntPtr.Zero)
-            {
-                Native.DestroyWindow(_hwnd);
-                _hwnd = IntPtr.Zero;
-            }
-            if (_surface != null) { _surface.Dispose(); _surface = null; }
-            _graphics.Dispose();
-            _bitmap.Dispose();
+            base.Dispose();
             _current = null;
         }
     }

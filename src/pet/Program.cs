@@ -112,6 +112,17 @@ namespace DshLitePet
                 _bubble.OffsetY = _settings.BubbleOffsetY;
                 _bubble.OnOffsetChanged(PersistBubbleOffset);
                 _menu = new PetMenu(_catalog);
+                // The menu treats the pet as part of itself for dismissal: moving from a
+                // row onto the pet must not close it.
+                PopupMenu.PetHit = (x, y) =>
+                {
+                    Native.RECT petRect = default(Native.RECT);
+                    if (_hwnd == IntPtr.Zero || !Native.GetWindowRect(_hwnd, ref petRect)) return false;
+                    int lx = x - petRect.Left;
+                    int ly = y - petRect.Top;
+                    if (lx < 0 || ly < 0) return false;
+                    return _canvas != null && _canvas.HitTest(lx, ly);
+                };
                 _ipc = new Ipc();
                 _ipc.Start();
 

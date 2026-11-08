@@ -1,4 +1,10 @@
-// Native popup menu: 动作 ▸ (category ▸ animation), 调整大小 ▸ presets, 查余额, 关闭桌宠.
+// The pet's right-click menu: 动作 ▸ (category ▸ animation), 调整大小 ▸ presets,
+// 查余额, 关闭桌宠.
+//
+// This used to be a native TrackPopupMenuEx, which cannot both avoid taking focus and
+// dismiss itself when the user clicks elsewhere — the two requirements are mutually
+// exclusive on that API. See PopupMenu.cs for the measurements. The building and lookup
+// logic lives here; the drawing and the dismissal live there.
 using System;
 using System.Collections.Generic;
 
@@ -18,6 +24,7 @@ namespace DshLitePet
 
         private readonly Catalog _catalog;
         private readonly Dictionary<int, CatalogEntry> _commands = new Dictionary<int, CatalogEntry>();
+        private PopupMenu _popup;
 
         public PetMenu(Catalog catalog)
         {
@@ -25,75 +32,49 @@ namespace DshLitePet
         }
 
         /// <summary>Shows the menu. Returns the chosen command and, for 调整大小, the requested scale.</summary>
-        public int Show(IntPtr hwnd, double currentScale, out CatalogEntry chosen, out double chosenScale)
+        public int Show(IntPtr owner, double currentScale, out CatalogEntry chosen, out double chosenScale)
         {
             chosen = null;
             chosenScale = 0;
-            IntPtr root = Native.CreatePopupMenu();
-            var groups = new List<IntPtr>();
-            try
+
+            if (_popup == null) _popup = new PopupMenu();
+            else _popup.Reset();
+            _commands.Clear();
+
+            // Command ids must be unique across the WHOLE menu, not per submenu. A per-group
+            // index made every group's first entry id 100 and the dictionary kept only the
+            // last one, so the wrong clip played.
+            int nextCommand = AnimationBase;
+
+            PopupMenu.Panel actions = _popup.AddSubmenu("动作");
+            foreach (string group in _catalog.Groups())
             {
-                // Command ids must be unique across the WHOLE menu, not per submenu.
-                // Win32 hands back one integer, so a per-group index made every group's
-                // first entry id 100 and every group's second id 101; the dictionary
-                // kept only the last group's entry and the wrong clip played.
-                int nextCommand = AnimationBase;
-                IntPtr actions = Native.CreatePopupMenu();
-                groups.Add(actions);
-                foreach (string group in _catalog.Groups())
+                PopupMenu.Panel sub = _popup.AddSubmenuTo(actions, group);
+                foreach (CatalogEntry entry in _catalog.ByGroup(group))
                 {
-                    IntPtr sub = Native.CreatePopupMenu();
-                    groups.Add(sub);
-                    foreach (CatalogEntry entry in _catalog.ByGroup(group))
-                    {
-                        int itemCommand = nextCommand++;
-                        Native.AppendMenu(sub, Native.MF_STRING, (UIntPtr)itemCommand, entry.Name);
-                        _commands[itemCommand] = entry;
-                    }
-                    Native.AppendMenu(actions, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)sub.ToInt64()), group);
+                    int command = nextCommand++;
+                    _popup.AddActionTo(sub, entry.Name, command);
+                    _commands[command] = entry;
                 }
-                Native.AppendMenu(root, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)actions.ToInt64()), "动作");
-
-                IntPtr sizes = Native.CreatePopupMenu();
-                groups.Add(sizes);
-                for (int i = 0; i < Scales.Length; i++)
-                {
-                    uint flags = Native.MF_STRING;
-                    if (Math.Abs(Scales[i] - currentScale) < 0.01) flags |= Native.MF_CHECKED;
-                    Native.AppendMenu(sizes, flags, (UIntPtr)(ScaleBase + i), ScaleLabels[i]);
-                }
-                Native.AppendMenu(root, Native.MF_POPUP | Native.MF_STRING, unchecked((UIntPtr)sizes.ToInt64()), "调整大小");
-
-                Native.AppendMenu(root, Native.MF_SEPARATOR, UIntPtr.Zero, null);
-                Native.AppendMenu(root, Native.MF_STRING, (UIntPtr)CommandBalance, "查余额");
-                Native.AppendMenu(root, Native.MF_STRING, (UIntPtr)CommandQuit, "关闭桌宠");
-
-                Native.POINT point;
-                Native.GetCursorPos(out point);
-                // The pet is WS_EX_NOACTIVATE and must stay that way: taking the foreground
-                // here pulled focus out of whatever the user was typing in, which is what
-                // "右键时抢焦点了" was.
-                //
-                // Win32 wants the owning window to be foreground so the menu dismisses when
-                // the user clicks elsewhere. Posting WM_NULL afterwards is the accepted way to
-                // satisfy that requirement without activating anything — it makes the shell
-                // treat this thread as the menu owner for the duration, and nothing is raised.
-                Native.PostMessage(hwnd, Native.WM_NULL, IntPtr.Zero, IntPtr.Zero);
-                int command = Native.TrackPopupMenuEx(
-                    root,
-                    Native.TPM_RIGHTBUTTON | Native.TPM_RETURNCMD | Native.TPM_NONOTIFY,
-                    point.X, point.Y, hwnd, IntPtr.Zero);
-
-                if (command >= AnimationBase && _commands.ContainsKey(command)) chosen = _commands[command];
-                if (command >= ScaleBase && command < ScaleBase + Scales.Length) chosenScale = Scales[command - ScaleBase];
-                return command;
             }
-            finally
+
+            PopupMenu.Panel sizes = _popup.AddSubmenu("调整大小");
+            for (int i = 0; i < Scales.Length; i++)
             {
-                Native.DestroyMenu(root);
-                _commands.Clear();
+                _popup.AddCheckableTo(sizes, ScaleLabels[i], ScaleBase + i,
+                    Math.Abs(Scales[i] - currentScale) < 0.01);
             }
+
+            _popup.AddSeparator();
+            _popup.AddAction("查余额", CommandBalance);
+            _popup.AddAction("关闭桌宠", CommandQuit);
+
+            int command2 = _popup.Show();
+
+            if (command2 >= AnimationBase && _commands.ContainsKey(command2)) chosen = _commands[command2];
+            if (command2 >= ScaleBase && command2 < ScaleBase + Scales.Length) chosenScale = Scales[command2 - ScaleBase];
+            _commands.Clear();
+            return command2;
         }
     }
 }
-

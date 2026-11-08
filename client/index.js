@@ -34,19 +34,21 @@ window.__ModuleLoader__.load({
     const HEADER_ACTIONS_SUFFIX = '_headerActions'
     const SECTION_HEADER_SUFFIX = '_sectionHeader'
 
-    // The host's own outline icons are drawn on a 16-unit grid with stroke-width 1, so
-    // the same visual weight on this 100-unit artwork is 100/16 = 6.25.
-    const GLYPH_VIEWBOX = '0 0 100 100'
-    const GLYPH_STROKE = 6.25
+    // The host's own outline icons (`Icon*OutlineRegular` from
+    // `@deepseek-ai/dsh-client-ui-primitives`) share one artwork convention:
+    // `<svg width height viewBox="0 0 16 16" fill="none" stroke="currentColor"
+    // stroke-width={1}>`, with round caps and joins. Drawing on the same 16-unit grid at
+    // the same stroke width is what makes this sit in the row as a peer rather than
+    // looking bolder or lighter than the buttons beside it.
     const GLYPH =
-      '<svg width="16" height="16" viewBox="' + GLYPH_VIEWBOX + '" fill="none" aria-hidden="true" ' +
-      'stroke="currentColor" stroke-width="' + GLYPH_STROKE + '" ' +
+      '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" ' +
+      'stroke="currentColor" stroke-width="1" ' +
       'stroke-linecap="round" stroke-linejoin="round" style="display:block">' +
       // Water-drop body.
-      '<path d="M 50 10 C 30 40, 25 50, 25 65 A 25 25 0 0 0 75 65 C 75 50, 70 40, 50 10 Z"/>' +
+      '<path d="M8 1.92C4.8 6.08 3.2 8.32 3.2 10.56A4.8 4.8 0 0 0 12.8 10.56C12.8 8.32 11.2 6.08 8 1.92Z"/>' +
       // Two eyes, mirrored about the centre.
-      '<path d="M 40 56 L 40 64"/>' +
-      '<path d="M 60 56 L 60 64"/>' +
+      '<path d="M5.6 8.96v1.92"/>' +
+      '<path d="M10.4 8.96v1.92"/>' +
       '</svg>'
 
     async function readJson(path, init) {
@@ -200,16 +202,19 @@ window.__ModuleLoader__.load({
           teardown()
           return
         }
-        const actions = header.querySelector(`[class*="${HEADER_ACTIONS_SUFFIX}"]`)
-        if (actions === null) {
+        // The header is [label][searchSlot][headerActions]. The seat asked for is the one
+        // LEFT of the search box, so the anchor is the search slot itself — anchoring on
+        // headerActions instead puts the icon to the RIGHT of the search box, because the
+        // actions group comes after it in document order.
+        const search = header.querySelector(`[class*="${SEARCH_SLOT_SUFFIX}"]`)
+        const anchor = search !== null ? search : header.querySelector(`[class*="${HEADER_ACTIONS_SUFFIX}"]`)
+        if (anchor === null) {
           teardown()
           return
         }
         if (button === null) button = build()
-        // Immediately before the host's actions group: the seat left of 搜索, and it
-        // survives the headerActions collapse while the search box is expanded.
-        if (button.parentNode !== header || button.nextSibling !== actions) {
-          header.insertBefore(button, actions)
+        if (button.parentNode !== header || button.nextSibling !== anchor) {
+          header.insertBefore(button, anchor)
         }
         control.paint()
       }

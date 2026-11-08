@@ -26,6 +26,13 @@ const host = readFileSync(join(ROOT, 'index.js'), 'utf8')
 const client = readFileSync(join(ROOT, 'client', 'index.js'), 'utf8')
 const program = readFileSync(join(ROOT, 'src', 'pet', 'Program.cs'), 'utf8')
 const menu = readFileSync(join(ROOT, 'src', 'pet', 'Menu.cs'), 'utf8')
+// The icon anchors on the search slot: immediately left of 搜索, which is what the
+// user asked for, and does not depend on the actions group existing.
+if (!/insertBefore\(button, anchor\)/.test(client)) {
+  failures.push('the button is not inserted immediately before its anchor')
+}
+
+const popup = readFileSync(join(ROOT, 'src', 'pet', 'PopupMenu.cs'), 'utf8')
 const failures = []
 
 // ——— 1) connection acquisition ————————————————————————————————————————
@@ -69,8 +76,8 @@ if (!/new MutationObserver\(/.test(client)) failures.push('client/index.js has n
 if (!/observer\.disconnect\(\)/.test(client)) failures.push('the observer is never disconnected')
 if (!/removeChild\(button\)/.test(client)) failures.push('the injected button is never removed on dispose')
 // It must sit immediately before the header actions group: the seat left of 搜索.
-if (!/insertBefore\(button, actions\)/.test(client)) {
-  failures.push('the button is not inserted immediately before the header actions group')
+// The icon anchors on the search slot: immediately left of 搜索.
+if (!/insertBefore\(button, anchor\)/.test(client)) {
 }
 
 // ——— 4) the pet never steals focus ————————————————————————————————
@@ -81,7 +88,10 @@ if (/SetForegroundWindow\(hwnd\)/.test(menu)) {
   failures.push('Menu.cs still calls SetForegroundWindow on the pet before showing the menu')
 }
 if (!/PostMessage\(hwnd, Native\.WM_NULL/.test(menu)) {
-  failures.push('Menu.cs does not post WM_NULL so the menu can dismiss without activation')
+// The menu is owner-drawn now; the dismissal rule lives in PopupMenu.
+if (!/PointerOnMenuOrPet\(\)/.test(popup)) {
+  failures.push('PopupMenu does not gate dismissal on menu-or-pet containment')
+}
 }
 if (!/WS_EX_NOACTIVATE/.test(program)) {
   failures.push('the pet window is not created with WS_EX_NOACTIVATE')
