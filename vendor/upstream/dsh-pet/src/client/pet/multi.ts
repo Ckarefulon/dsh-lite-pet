@@ -16,6 +16,7 @@ import {
   flattenCounters,
   readAnim,
   readBalance,
+  readEnv,
   readLock,
   readPosition,
   readSay,
@@ -29,6 +30,7 @@ import { fontStackOf } from '../../shared/fonts.ts';
 import type { Pet } from '../../shared/types.ts';
 import type { BalanceState } from '../../shared/balance/index.ts';
 import type {
+  EnvState,
   LockState,
   PetFacing,
   PetLeafName,
@@ -77,14 +79,20 @@ export function createPetMulti(
     const [balanceNoticeTick, setBalanceNoticeTick] = useState(0);
     // 本次余额是否由用户手动请求；手动请求无条件弹，开关只关自动。
     const [balanceManual, setBalanceManual] = useState(false);
+    // 本次余额「给谁看」：右键菜单点的那只。undefined = 不带归属（周期刷新 / 命令），所有开了余额的都弹。
+    const [balancePetId, setBalancePetId] = useState<string | undefined>(undefined);
+    // 环境结果：机器级一份，`petId` 决定哪只宠物点亮环境气泡。
+    const [env, setEnv] = useState<EnvState | null>(null);
+    const [envTick, setEnvTick] = useState(0);
     // 上次已提示的不可用原因，自动轮询只在原因变化时再弹。
     const noticeKeyRef = useRef<string | null>(null);
     // 余额结果统一入口；存 ref 是为了让 /state effect 的依赖保持 [ready]。
     // explicit 表示本次是否手动触发。
-    const applyBalanceRef = useRef<(state: BalanceState, explicit: boolean) => void>(() => {});
-    applyBalanceRef.current = (state, explicit) => {
+    const applyBalanceRef = useRef<(state: BalanceState, explicit: boolean, petId?: string) => void>(() => {});
+    applyBalanceRef.current = (state, explicit, petId) => {
       setBalance(state);
       setBalanceManual(explicit); // 手动标记随本次数据一起下发，每次到达都覆盖。
+      setBalancePetId(petId); // 归属同样每次覆盖：带 pet 的那次只让该宠物弹，不带则恢复全员
       if (state.ok) {
         setBalanceTick((t) => t + 1); // 成功：播档位动画并弹余额气泡。
         return;
@@ -217,7 +225,7 @@ export function createPetMulti(
             return;
           case 'balance': {
             const hit = readBalance(leaf);
-            if (hit) applyBalanceRef.current(hit.state, hit.manual);
+            if (hit) applyBalanceRef.current(hit.state, hit.manual, hit.petId);
             return;
           }
           case 'workStatus': {
@@ -227,6 +235,16 @@ export function createPetMulti(
               setWorkStatusTick((t) => t + 1); // 任何变化都触发，含回到空闲。
               // 工作状态播报：与系统通知同级、同样只在网页端出声；不写 say 叶子。
               speakWorkStatus(snap);
+            }
+            return;
+          }
+          case 'env': {
+            // 用户点了「查询天气」：叶子带 petId，只有那只宠物点亮气泡。
+            // 不是状态而是事件——首拉不补（页面重新加载不该重放一次查询）。
+            const hit = readEnv(leaf);
+            if (hit) {
+              setEnv(hit);
+              setEnvTick((t) => t + 1);
             }
             return;
           }
@@ -360,6 +378,10 @@ export function createPetMulti(
             balanceTick,
             balanceNoticeTick,
             balanceManual,
+            balancePetId,
+            // 环境是机器级一份：只有 petId 对得上的那只宠物收到，其余传 undefined 不弹气泡
+            env: env !== null && env.petId === p.id ? env : undefined,
+            envTick,
             workStatus: workOn ? workStatus : null,
             workStatusTick: workOn ? workStatusTick : 0,
             onFocusSession: jumpToSession,

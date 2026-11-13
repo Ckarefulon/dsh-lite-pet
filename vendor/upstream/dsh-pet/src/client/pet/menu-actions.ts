@@ -141,8 +141,16 @@ export function createMenuActions(deps: MenuActionDeps): MenuActions {
     }
     if (leaf.action === 'show-balance') {
       // 动作端点让宿主刷新并写入 /state，页面什么都不用做。
+      // 带 pet：这次只让被点的那只弹气泡；surface=any = 点菜单的一端不一定是渲染端。
       console.info('[dsh-pet] 菜单查看余额 pet=' + petId);
-      fireAction(ROUTE_PATH + '/balance', '余额刷新动作');
+      fireAction(ROUTE_PATH + '/balance?pet=' + encodeURIComponent(petId) + '&surface=any', '余额刷新动作');
+      return;
+    }
+    if (leaf.action === 'show-environment') {
+      // 与余额同一套：宿主强制刷新并写 sections.env，气泡由 /state 驱动。
+      // surface=any：点菜单的这一端不一定就是渲染端，宿主只按 petId 记给气泡。
+      console.info('[dsh-pet] 菜单查询天气 pet=' + petId);
+      fireAction(ROUTE_PATH + '/environment?pet=' + encodeURIComponent(petId) + '&surface=any&fresh=1', '天气查询动作');
       return;
     }
     if (leaf.action === 'whisper') {
