@@ -2,7 +2,7 @@
 
 轻量的 **DSH 系统级桌面桌宠**。不套 Electron、不嵌 Chromium：桌宠是一个约 1 MB 的原生 Windows 进程（系统自带 .NET Framework 4.8 + Media Foundation 解码），盯着 DSH 的会话事件在桌面上动画。
 
-素材（动画、立绘）来自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)，由 `git subtree` + GitHub Actions 每日同步；**代码与上游无关**。
+素材（动画、立绘）来自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)，母版以 `vendor/webm/` 随仓库分发；**代码与上游无关**。
 
 ## 功能
 
@@ -77,10 +77,7 @@
 ## 开发
 
 ```bash
-# 1) 素材子树（CI 里由 Actions 首次自动添加；本地也可以手动跑）
-git subtree add --prefix=vendor/upstream https://github.com/PC2005-cloud/dsh-pet.git main --squash
-
-# 2) 构建
+# 1) 构建
 npm run build            # 核心素材 + 编译桌宠
 npm run build:media:full # 全套素材并打包成 Release 资产
 npm run test:pet         # 冒烟：启动 → ready → 切状态 → quit（需要交互式桌面）
@@ -89,11 +86,21 @@ npm run test:bubble      # 气泡状态机：优先级、正文/提示替换、�
 npm run test:stack       # 真实桌面上验证 宠物 ▸ 气泡 ▸ 菜单 的层级（需要交互式桌面）
 ```
 
+素材母版就是 `vendor/webm/`（114 段 VP9 + alpha），`build-media.mjs` 直接读这里，所以构建**不需要联网、也不需要上游仓库**。
+
+想读上游的文档或代码时，自己把上游 checkout 到 `vendor/upstream/` 即可（该路径已在 `.gitignore` 里）：
+
+```bash
+git clone https://github.com/PC2005-cloud/dsh-pet.git vendor/upstream
+```
+
+> 这里以前挂着一个每天跑的 `git subtree` 同步。它同步进来的树**没有任何代码读**（构建读的是 `vendor/webm`），却每天固定产生两个提交，把提交历史埋掉了 —— 已移除。
+
 ## 发布
 
 - 打 `v*` tag（或手动触发）运行 `.github/workflows/publish.yml`：构建核心素材 → 编译桌宠 → 打全套素材包 → `npm publish` → 创建 GitHub Release 并附上素材包。
 - 发布走 **npm Trusted Publishing（OIDC）**，仓库里不需要任何 token secret。需要在 npmjs.com 上给 `dsh-lite-pet` 配置 Trusted Publisher：仓库 `Ckarefulon/dsh-lite-pet`、工作流文件 `publish.yml`。
-- `.github/workflows/sync-assets.yml` 每天 `git subtree pull` 上游素材，有变更即提交并推送。
+- 上游素材更新时，手动把新的母版放进 `vendor/webm/` 再提交 —— 素材是有意的、需要验证的一次性动作，不该由定时任务代劳。
 
 
 ## 许可

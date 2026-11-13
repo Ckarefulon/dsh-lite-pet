@@ -8,3 +8,8 @@ runtime/*.zip
 # Scratch files from local testing
 runtime/probe.ps1
 runtime/*.ps1
+# The upstream checkout used to live here. Nothing ever read it — the media build
+# reads vendor/webm — and syncing it daily produced two commits a day for a tree
+# nobody consumed. Local copies are still useful for reading upstream's docs, so
+# the path stays ignored rather than forbidden.
+vendor/upstream/
