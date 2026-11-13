@@ -282,14 +282,37 @@ PetSprite.prototype.toggleBalanceDetail = function toggleBalanceDetail() {
   }, BUBBLE_DURATION_MS);
 };
 
+// 环境气泡（查询天气）：宿主写完 sections.env 后由 applyEnvLeaf 调到这里。
+// 睡着不弹（睡姿优先）；占用锁不挡——用户主动点的一次性查询，与手动余额同口径。
+// 计时器用自己的 envTimer：与余额共用 bubbleTimer 会互相提前收起。
+PetSprite.prototype.showEnvNow = function showEnvNow(state) {
+  if (!state || state.petId !== this.pet.id) return;
+  if (this.sleeping) return;
+  this.envState = state;
+  this.envOn = true;
+  this.renderBubble();
+  if (this.envTimer !== null) window.clearTimeout(this.envTimer);
+  this.envTimer = window.setTimeout(() => {
+    this.envTimer = null;
+    this.envOn = false;
+    this.renderBubble();
+  }, BUBBLE_DURATION_MS);
+};
+
 // 轮询组装：容器统一拉取与触发，与浏览器端同一套路径。
 
 // 余额不可用 → 文字说明气泡（周期轮询与手动 /balance 共用这一条路径，判定在 shared）：
 // explicit（手动触发）一律弹；自动轮询只在原因（含服务商）变化时弹一次，避免反复刷同一句话。
-function applyBalanceNotice(state, explicit) {
+// petId 给了就只弹给那只（右键菜单点的那只），缺省照旧全员。
+function applyBalanceNotice(state, explicit, petId) {
   const notice = S.decideBalanceNotice(state, balanceNoticeKey, explicit);
   balanceNoticeKey = notice.key;
-  if (notice.show) for (const s of sprites) s.showBalanceNotice(state, explicit);
+  if (notice.show) {
+    for (const s of sprites) {
+      if (petId !== undefined && petId !== s.pet.id) continue;
+      s.showBalanceNotice(state, explicit);
+    }
+  }
   // 未登记服务商是配置事实（已由气泡说明），不再刷 console；其余原因照旧显式报错，绝不伪造余额
   if (state.reason !== 'unsupported') {
     console.error('[dsh-pet] 余额查询失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
@@ -304,7 +327,8 @@ let stateSince;
 /** 宿主支持长轮询吗？响应带 counter = 支持；不带 = 老宿主（会立刻返回全量，必须退避） */
 let stateLongPoll = true;
 
-/** 余额叶子 → 展示（成功播档位动画 + 气泡；不可用按 shared 判定弹文字说明） */
+/** 余额叶子 → 展示（成功播档位动画 + 气泡；不可用按 shared 判定弹文字说明）。
+ *  叶子带 petId 时只给那只宠物（右键菜单点的那只），不带则所有开了余额的照常显示。 */
 function applyBalanceLeaf(leaf) {
   const hit = S.readBalance(leaf);
   if (!hit) return;
@@ -313,11 +337,23 @@ function applyBalanceLeaf(leaf) {
   if (hit.state.ok) {
     balanceTick++;
     // 睡着一律不播：档位动画与气泡都不更新，手动请求也不例外（睡姿优先）
-    for (const s of sprites) if (!s.sleeping) s.onBalanceTick(hit.state, balanceTick, hit.manual);
+    for (const s of sprites) {
+      if (s.sleeping) continue;
+      if (hit.petId !== undefined && hit.petId !== s.pet.id) continue;
+      s.onBalanceTick(hit.state, balanceTick, hit.manual);
+    }
   } else {
     // 不可用：manual（用户主动要的）一律弹，周期刷新只在原因变化时弹一次
-    applyBalanceNotice(hit.state, hit.manual);
+    applyBalanceNotice(hit.state, hit.manual, hit.petId);
   }
+}
+
+/** 环境叶子 → 对应宠物弹环境气泡。`petId` 是叶子写的「谁弹」，本窗口只装一只，按 id 命中。
+ *  睡着不弹（不打断睡姿）；占用锁不挡——它是用户点「查询天气」发起的一次性查询。 */
+function applyEnvLeaf(leaf) {
+  const state = S.readEnv(leaf);
+  if (!state) return;
+  for (const s of sprites) s.showEnvNow(state);
 }
 
 /** 说话叶子 → 对应宠物播说话动画 + 气泡。`kind: 'clear'` = 收起气泡，其余 = 弹一个气泡。 */
@@ -447,6 +483,7 @@ async function pollStateOnce() {
     for (const change of S.takeChanged(s, stateBaseline)) {
       if (change.leaf.data === null) continue;
       if (change.path === 'sections.balance') applyBalanceLeaf(change.leaf);
+      else if (change.path === 'sections.env') applyEnvLeaf(change.leaf);
       else if (change.path === 'sections.workStatus') applyWorkStatusLeaf(change.leaf);
       else if (change.path === 'sections.menu') applyMenuLeaf(change.leaf);
       else if (change.path.startsWith('pets.') && change.path.endsWith('.say')) {
