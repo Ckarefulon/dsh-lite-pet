@@ -43,6 +43,8 @@ namespace DshLitePet
         public const int SWP_NOSIZE = 0x0001;
         public const int SWP_NOMOVE = 0x0002;
         public const int SWP_NOACTIVATE = 0x0010;
+        /// <summary>Do not restack this window's owned windows along with it.</summary>
+        public const int SWP_NOOWNERZORDER = 0x0200;
         public const int SWP_SHOWWINDOW = 0x0040;
         public const int SWP_NOZORDER = 0x0004;
         public const int SWP_FRAMECHANGED = 0x0020;

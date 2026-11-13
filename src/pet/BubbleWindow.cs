@@ -88,12 +88,21 @@ namespace DshLitePet
         /// <summary>Called when a finished drag changes the offset, so it can be persisted.</summary>
         internal void OnOffsetChanged(Action callback) { _offsetChanged = callback; }
 
-        /// <summary>Creates the window; it starts hidden and is shown once there is text.</summary>
-        internal void Create()
+        /// <summary>
+        /// Creates the window; it starts hidden and is shown once there is text.
+        ///
+        /// <paramref name="owner"/> is the pet's window. It is what makes the bubble an OWNED
+        /// window, and Windows then keeps it above the pet on its own: the pet is raised on
+        /// every drag tick, and each of those raises used to put the pet in front of its own
+        /// bubble until the next restack — observed as the bubble blinking up and down through
+        /// the pet while dragging. An owned window is never demoted below its owner, so there is
+        /// no periodic repair to lose a race against.
+        /// </summary>
+        internal void Create(IntPtr owner)
         {
             // The window class, the window and the surface all come from the shared
             // base; the bubble only supplies its class name and its painting.
-            CreateWindow(Width, _height);
+            CreateWindow(Width, _height, owner);
         }
 
         /// <summary>
@@ -180,14 +189,12 @@ namespace DshLitePet
                 Native.ShowWindow(Hwnd, Native.SW_SHOWNOACTIVATE);
             }
             Reposition();
-            // Reposition already lifts this window above the pet, but only when it can
-            // compute a position. A height change from Paint resizes the window through
-            // UpdateLayeredWindow, and that can drop it behind the pet, so the raise is
-            // also issued here — Reposition's own lift then becomes a no-op reorder that
-            // Windows collapses.
-            // the pet, which is also topmost. Reposition lifts it, but a paint-only update
-            // would not, so the raise is repeated here as the final step of every update.
-            BringToTop();
+            // The bubble is an owned window of the pet, so Windows keeps it above the pet by
+            // itself; the only ordering that still needs stating is against its SIBLING — the
+            // menu — which the pet places. A height change resizes the window through
+            // UpdateLayeredWindow, and UpdateLayeredWindow does not touch the z-order (measured),
+            // so no repair raise belongs here.
+            if (_visible) BringToTop();
         }
 
         internal void Hide()
@@ -271,9 +278,9 @@ namespace DshLitePet
             }
 
             Present(_bubbleX, _bubbleY);
-            // A height change makes UpdateLayeredWindow resize the window, and a resize can
-            // put it behind the pet. Raising here, right after the resize, is what keeps a
-            // growing bubble from being covered the moment it gains a second line.
+            // A resize can reorder the topmost band, so "just in front of the pet" is stated
+            // again after the surface changes. Only when the bubble is on screen: raising a
+            // hidden window is pointless work and would reorder the band for nothing.
             if (_visible) BringToTop();
         }
 
@@ -296,32 +303,28 @@ namespace DshLitePet
         // ——— placement and dragging ————————————————————————————————
 
         /// <summary>
-        /// Raises the bubble to the top of the topmost band.
+        /// Puts the bubble directly in front of the pet.
         ///
-        /// Both the pet and the bubble are topmost, and Windows orders windows *within* that
-        /// band by whoever was raised last. The pet is raised whenever it is dragged or
-        /// resized, which would otherwise put it in front of its own bubble — visible as
-        /// soon as the bubble is dragged down over the pet's body.
+        /// Ownership already guarantees "above the pet"; this adds "and not above its own
+        /// menu", which is the one relationship ownership cannot express. It deliberately does
+        /// NOT send the bubble to the front of the topmost band: a front-of-band raise is what
+        /// the old code did on every tick, and it is what let the menu and the bubble trade
+        /// places under the cursor.
         ///
-        /// This goes through <see cref="Raise"/>, so the pet can restack the whole band in
-        /// one step: raising only the bubble here is what let the pet and the menu bury it.
+        /// This routes through <see cref="PlaceInFront"/>, so the pet decides the spot in one
+        /// call (pet directly behind the bubble) and can keep the menu above both.
         /// </summary>
         internal void BringToTop()
         {
             if (Hwnd == IntPtr.Zero || !_visible) return;
-            Raise();
+            PlaceInFront();
         }
 
         /// <summary>
-        /// Raises the bubble only when it is on screen. Called by <see cref="Program.Restack"/>
-        /// while rebuilding the whole stack, where the bubble may well be hidden — there is no
-        /// text to show, and raising a hidden window is pointless work on every drag move.
+        /// True while the bubble has text on screen. The pet uses it to skip work during a
+        /// drag: there is nothing to keep in order when the bubble is hidden.
         /// </summary>
-        internal void RaiseWhenVisible()
-        {
-            if (Hwnd == IntPtr.Zero || !_visible) return;
-            RaiseRaw();
-        }
+        internal bool OnScreen { get { return _visible && Hwnd != IntPtr.Zero; } }
 
         /// <summary>Moves the window to its anchor plus the current offset.</summary>
         private void Reposition()
@@ -329,7 +332,9 @@ namespace DshLitePet
             if (Hwnd == IntPtr.Zero || !_visible) return;
             int left = _hasPet ? _pet.Left + ((_pet.Right - _pet.Left) - Width) / 2 : 0;
             int top = RestTop() + OffsetY;
-            // Stay above the pet: it is raised on every drag, and the bubble has to follow.
+            // Stay in front of the pet. Ownership already guarantees it; stating it here costs
+            // one relative SetWindowPos and keeps the invariant visible at the place that moves
+            // the window, rather than relying on a restack that runs after the fact.
             BringToTop();
             // UpdateLayeredWindow both moves and repaints; a separate SetWindowPos is not
             // needed and, when the size is left to it, can disagree with the DIB.

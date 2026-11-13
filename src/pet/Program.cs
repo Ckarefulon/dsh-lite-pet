@@ -153,9 +153,8 @@ namespace DshLitePet
                     // receiving the movement for the rest of the gesture.
                     Native.SetCapture(_hwnd);
                 };
-                // Every raise in the process goes through Restack, which knows the whole
-                // stacking order (pet ▸ bubble ▸ menu). See Restack for why a single-window
-                // raise is not enough on topmost windows.
+                // Both satellites ask here when they need their place restored: only the pet
+                // knows all three handles, so only it can declare the whole order at once.
                 LayeredPopup.RestackRequest = Restack;
 
                 _ipc = new Ipc();
@@ -222,7 +221,11 @@ namespace DshLitePet
             if (_hwnd == IntPtr.Zero) throw new InvalidOperationException("CreateWindowEx failed: " + Marshal.GetLastWin32Error());
             Native.ShowWindow(_hwnd, Native.SW_SHOWNOACTIVATE);
             Native.SetWindowPos(_hwnd, (IntPtr)(-1), 0, 0, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
-            _bubble.Create();
+            _bubble.Create(_hwnd);
+            // The menu is lazily created on the first right click, but it must be owned by the
+            // pet from the start so it is a topmost sibling and can be ordered against the
+            // bubble the moment it opens.
+            if (_menu != null) _menu.SetOwner(_hwnd);
             PositionBubble();
         }
 
@@ -250,28 +253,55 @@ namespace DshLitePet
         }
 
         /// <summary>
-        /// Re-establishes the stacking order of the pet's three topmost windows.
+        /// Puts the pet directly behind <paramref name="above"/>, with its own window placed
+        /// relative to it instead of at the front of the topmost band.
         ///
-        /// There is no way to ask Windows for "this window, but always below that one" on
-        /// topmost windows: the band is ordered by whichever window was raised last, so any
-        /// single raise silently demotes everything else in it. Raising the pet on a drag
-        /// therefore buried the bubble, and the bubble repainting while the menu was open
-        /// buried the menu — both reported as "上下层级有时候还是被宠物压着了".
-        ///
-        /// The order is rebuilt in one place instead. `SetWindowPos(HWND_TOPMOST)` puts the
-        /// named window at the FRONT of the band, so raising front-to-back would invert the
-        /// result; the windows are raised back-to-front, which leaves the pet at the back,
-        /// the bubble above it, and an open menu above both.
+        /// Why this and not `SetWindowPos(HWND_TOPMOST)` on every member: a front-of-band raise
+        /// cannot express "this one, but only just above that one". Every raise demotes
+        /// everything else, so during a drag the bubble was behind the pet for the whole tick
+        /// between the pet's raise and the bubble's — measured, and exactly the 上下跳 the user
+        /// reported. A relative placement (`hWndInsertAfter` = the window that must sit below)
+        /// states the order once and leaves nothing to race.
+        /// </summary>
+        private static bool PlacePetBehind(IntPtr above)
+        {
+            if (_hwnd == IntPtr.Zero || above == IntPtr.Zero) return false;
+            // The pet keeps its topmost membership; SWP_NOOWNERZORDER stops the owned windows
+            // from being restacked as a side effect of moving it.
+            return Native.SetWindowPos(_hwnd, above, 0, 0, 0, 0,
+                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE | Native.SWP_NOOWNERZORDER);
+        }
+
+        /// <summary>
+        /// Re-establishes who is in front of whom: pet at the back, then the bubble, then an
+        /// open menu. Every step is a relative placement, so the result is the stated order
+        /// rather than "whatever was raised last" — the difference between an invariant and the
+        /// flicker this replaced.
         /// </summary>
         private static void Restack()
         {
             if (_hwnd == IntPtr.Zero) return;
-            // Back of the band first, front last. Both satellites skip themselves when they
-            // are not on screen, so a drag with no bubble showing costs one call.
-            Native.SetWindowPos(_hwnd, (IntPtr)(-1), 0, 0, 0, 0,
-                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
-            if (_bubble != null) _bubble.RaiseWhenVisible();
-            if (_menu != null) _menu.RaisePopup();
+            IntPtr bubble = _bubble != null && _bubble.OnScreen ? _bubble.Handle : IntPtr.Zero;
+            IntPtr menu = _menu != null ? _menu.HandleWhenOpen : IntPtr.Zero;
+
+            // The order is declared once, relative to the bubble, and does not assume anything
+            // about where anything currently sits.
+            if (bubble != IntPtr.Zero)
+            {
+                PlacePetBehind(bubble);
+                if (menu != IntPtr.Zero)
+                {
+                    // The menu is the front-most of the three; moving the bubble behind it is the
+                    // only sibling statement ownership cannot make for us.
+                    Native.SetWindowPos(bubble, menu, 0, 0, 0, 0,
+                        Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE | Native.SWP_NOOWNERZORDER);
+                    PlacePetBehind(bubble);
+                }
+            }
+            else if (menu != IntPtr.Zero)
+            {
+                PlacePetBehind(menu);
+            }
         }
         /// <summary>Keeps at least a sliver of the window inside the work area (a saved position can go stale).</summary>
         private static void ClampToWorkArea(Native.RECT work)
@@ -310,10 +340,12 @@ namespace DshLitePet
             _settings.WindowX = _windowX;
             _settings.WindowY = _windowY;
             _settings.Save();
-            Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, _windowWidth, _windowHeight,
-                Native.SWP_NOACTIVATE);
-            // Scale changes resize the pet, which raises it in front of its own bubble. Put the
-            // stack back in order rather than relying on PositionBubble to undo the damage.
+            // Move and resize without a raise: the bubble is owned, so it cannot be buried by
+            // this, and a front-of-band raise here would drag the pet in front of a menu.
+            Native.SetWindowPos(_hwnd, IntPtr.Zero, _windowX, _windowY, _windowWidth, _windowHeight,
+                Native.SWP_NOACTIVATE | Native.SWP_NOZORDER);
+            // Resizing changes where the bubble rests, and the pet's own z-order may have moved
+            // within the band; restate the order once after both.
             PositionBubble();
             Restack();
             Present();
@@ -485,15 +517,15 @@ namespace DshLitePet
                 if (nx == _windowX && ny == _windowY) return;
                 _windowX = nx;
                 _windowY = ny;
-                // Move WITHOUT raising, then restack. SetWindowPos on the pet while dragging
-                // was the single most common way the bubble ended up underneath it: every
-                // one of these moves put the pet at the front of the topmost band.
-                Native.SetWindowPos(_hwnd, (IntPtr)(-1), _windowX, _windowY, 0, 0,
-                    Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+                // Move WITHOUT raising. The bubble is an owned window, so Windows will not put
+                // the pet in front of it no matter how often this runs; the explicit restack
+                // afterwards only has to settle the sibling order (an open menu).
+                Native.SetWindowPos(_hwnd, IntPtr.Zero, _windowX, _windowY, 0, 0,
+                    Native.SWP_NOSIZE | Native.SWP_NOACTIVATE | Native.SWP_NOZORDER);
                 // The bubble has to follow the pet it belongs to.
                 PositionBubble();
-                // PositionBubble repaints the bubble, and the repaint raises it; putting the
-                // pet back behind it keeps the order stable for the whole drag.
+                // PositionBubble repaints the bubble; restating the order after the move keeps
+                // the menu above both for the whole drag.
                 Restack();
                 return;
             }

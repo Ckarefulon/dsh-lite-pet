@@ -110,39 +110,54 @@ namespace DshLitePet
         protected abstract IntPtr OnMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         /// <summary>
-        /// Installed by the pet so that every "raise me" goes through ONE place that knows
-        /// the whole stack (pet ▸ bubble ▸ menu).
+        /// Installed by the pet to re-declare the whole stacking order (pet ▸ bubble ▸ menu).
         ///
-        /// Raising a single window cannot express a stacking order. Within the topmost band
-        /// Windows orders windows by whichever was raised last, so the pet being raised on a
-        /// drag buried a bubble that had been raised earlier, and the bubble repainting
-        /// while the menu was open buried the menu. Routing every raise through the owner
-        /// is what makes the order an invariant instead of a race.
+        /// A satellite cannot express its own place in a band of siblings, and it cannot even
+        /// see the others' handles. So it asks the pet, which owns all three, to restate the
+        /// order — and the pet does that with RELATIVE placements, not band-wide raises. The
+        /// difference matters: a raise demotes everything it does not raise in the same breath,
+        /// and that is exactly what made the bubble flicker through the pet on every drag tick.
         /// </summary>
         internal static Action RestackRequest;
 
         /// <summary>
-        /// Raises this window, asking the owner to restack the whole band when it can.
-        /// Falls back to a plain raise so the surfaces still work on their own.
+        /// The window this one is anchored to for z-order purposes: the pet. Null until the
+        /// pet has created its window.
         /// </summary>
-        protected void Raise()
-        {
-            Action restack = RestackRequest;
-            if (restack != null) { restack(); return; }
-            RaiseRaw();
-        }
+        internal IntPtr AfterTarget;
 
-        /// <summary>Raises this window without consulting the stack. Only the owner calls this.</summary>
-        internal void RaiseRaw()
+        /// <summary>
+        /// Restates the stacking order so this window ends up in front of its anchor.
+        ///
+        /// Routed through the pet when it is installed: only the owner knows the sibling it has
+        /// to sit below (the bubble is under an open menu, and the menu is under nothing), so a
+        /// placement computed here could contradict it. The local fallback exists for the case
+        /// where a surface is driven on its own in a test.
+        /// </summary>
+        internal void PlaceInFront()
         {
             if (Hwnd == IntPtr.Zero) return;
-            Native.SetWindowPos(Hwnd, (IntPtr)Native.HWND_TOPMOST, 0, 0, 0, 0,
-                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE);
+            Action restack = RestackRequest;
+            if (restack != null) { restack(); return; }
+            if (AfterTarget == IntPtr.Zero) return;
+            // No owner installed: a plain relative placement is still order-stable against the
+            // single window this one is anchored to.
+            Native.SetWindowPos(Hwnd, AfterTarget, 0, 0, 0, 0,
+                Native.SWP_NOSIZE | Native.SWP_NOMOVE | Native.SWP_NOACTIVATE | Native.SWP_NOOWNERZORDER);
         }
 
-        /// <summary>Registers the class once per process and creates the window, hidden.</summary>
-        protected void CreateWindow(int width, int height)
+        /// <summary>
+        /// Registers the class once per process and creates the window, hidden.
+        ///
+        /// `owner` is not cosmetic: an owned window is *always* above its owner in the
+        /// z-order, and Windows enforces that without any help from us. That is what makes the
+        /// bubble immune to the pet being raised — a drag raises the pet on every tick, and
+        /// every such raise used to bury the bubble for the rest of the tick, which is the
+        /// 上下跳 the user sees.
+        /// </summary>
+        protected void CreateWindow(int width, int height, IntPtr owner)
         {
+            AfterTarget = owner;
             IntPtr instance = Native.GetModuleHandle(null);
             if (!RegisteredClasses.Contains(WindowClass))
             {
@@ -160,7 +175,7 @@ namespace DshLitePet
             Hwnd = Native.CreateWindowEx(
                 Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOPMOST,
                 WindowClass, WindowTitle, Native.WS_POPUP,
-                0, 0, width, height, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+                0, 0, width, height, owner, IntPtr.Zero, instance, IntPtr.Zero);
             lock (Live) Live[Hwnd] = this;
         }
 

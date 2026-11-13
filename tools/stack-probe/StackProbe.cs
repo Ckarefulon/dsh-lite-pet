@@ -1,17 +1,17 @@
 // Verifies the pet's window stacking order against a real desktop.
 //
 // The pet, its bubble and its menu are three separate topmost windows. Windows orders the
-// topmost band by whichever window was raised last, so a single raise silently demotes the
-// others — which is the reported "上下层级有时候还是被宠物压着了". Program.Restack exists to
-// make the order an invariant; this program proves both halves of that claim on a real
-// desktop:
+// topmost band by whichever window was raised last, so a single band-wide raise silently
+// demotes the others — the reported "气泡上下跳 / 被宠物压着".
 //
-//   * each real trigger (drag, scale change, bubble repaint) DOES break the order on its
-//     own, so the guard is testing something that genuinely regresses;
-//   * Restack restores it in every one of those cases.
+// This program proves the two halves of the fix on a real desktop:
 //
-// Expected-outcome assertions, not "no failures": a run where the bug stopped reproducing
-// would mean the probe no longer tests the reported path.
+//   * a band-wide raise of the pet DOES bury a sibling bubble, so the guard tests something
+//     that genuinely regresses (expected-outcome assertions, not just "no failures");
+//   * an OWNED bubble is never buried, no matter how often the pet is raised or moved —
+//     ownership is the actual mechanism, not a per-tick repair.
+//   * relative placement (`hWndInsertAfter` = a specific window) keeps all three ordered,
+//     including the bubble/menu sibling pair that ownership cannot express.
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -25,7 +25,8 @@ internal static class StackProbe
     const int WS_EX_TOPMOST = 0x08;
     const int ULW_ALPHA = 2;
     const int SW_SHOWNOACTIVATE = 4;
-    const int SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOACTIVATE = 0x10;
+    const int SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOACTIVATE = 0x10, SWP_NOZORDER = 4, SWP_NOOWNERZORDER = 0x200;
+    const int GW_OWNER = 4;
 
     delegate IntPtr WndProcD(IntPtr h, uint m, IntPtr w, IntPtr l);
     delegate bool EnumD(IntPtr h, IntPtr l);
@@ -59,6 +60,7 @@ internal static class StackProbe
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumD d, IntPtr l);
     [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
     [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr d);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, int c);
     [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr d);
     [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr d, ref BITMAPINFOHEADER b, uint u, out IntPtr bits, IntPtr s, uint o);
     [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr d, IntPtr o);
@@ -87,12 +89,12 @@ internal static class StackProbe
         var dst = new POINT(); dst.X = x; dst.Y = y;
         var size = new SIZE(); size.CX = w; size.CY = hh;
         var src = new POINT();
-        var bf = new BLENDFUNCTION(); bf.a = 0; bf.b = 0; bf.c = 255; bf.d = 1;
+        var bf = new BLENDFUNCTION(); bf.c = 255; bf.d = 1;
         UpdateLayeredWindow(h, IntPtr.Zero, ref dst, ref size, dc, ref src, 0, ref bf, ULW_ALPHA);
     }
 
     static readonly List<IntPtr> Ours = new List<IntPtr>();
-    static IntPtr Make(string cls, IntPtr inst)
+    static IntPtr Make(string cls, IntPtr inst, IntPtr owner)
     {
         var wc = new WNDCLASSEX();
         wc.cbSize = Marshal.SizeOf(typeof(WNDCLASSEX));
@@ -101,7 +103,7 @@ internal static class StackProbe
         wc.lpszClassName = cls;
         RegisterClassEx(ref wc);
         IntPtr h = CreateWindowEx(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
-            cls, cls, WS_POPUP, 300, 300, 300, 160, IntPtr.Zero, IntPtr.Zero, inst, IntPtr.Zero);
+            cls, cls, WS_POPUP, 300, 300, 300, 160, owner, IntPtr.Zero, inst, IntPtr.Zero);
         Ours.Add(h);
         ShowWindow(h, SW_SHOWNOACTIVATE);
         return h;
@@ -140,12 +142,19 @@ internal static class StackProbe
         SetWindowPos(h, (IntPtr)(-1), 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
     }
 
-    /// <summary>Exactly what Program.Restack does: back of the band first, front last.</summary>
+    /// <summary>Relative placement: put `behind`'s window directly in front of `above`.</summary>
+    static void PlaceInFront(IntPtr behind, IntPtr above)
+    {
+        SetWindowPos(behind, above, 0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
+
+    /// <summary>Exactly what Program.Restack does now: relative placement, no band raise.</summary>
     static void Restack(IntPtr pet, IntPtr bubble, IntPtr menu, bool menuOpen, bool bubbleOpen)
     {
-        Raise(pet);
-        if (bubbleOpen) Raise(bubble);
-        if (menuOpen) Raise(menu);
+        if (menuOpen) Raise(menu);          // front-most: the one place a band raise is correct
+        if (bubbleOpen) PlaceInFront(pet, bubble);
+        if (bubbleOpen && menuOpen) PlaceInFront(bubble, menu);
     }
 
     static int _failures;
@@ -163,9 +172,9 @@ internal static class StackProbe
     static int Main()
     {
         IntPtr inst = GetModuleHandle(null);
-        IntPtr pet = Make("StackProbePet", inst);
-        IntPtr bubble = Make("StackProbeBubble", inst);
-        IntPtr menu = Make("StackProbeMenu", inst);
+        IntPtr pet = Make("StackProbePet", inst, IntPtr.Zero);
+        IntPtr bubble = Make("StackProbeBubble", inst, IntPtr.Zero);
+        IntPtr menu = Make("StackProbeMenu", inst, IntPtr.Zero);
         if (pet == IntPtr.Zero || bubble == IntPtr.Zero || menu == IntPtr.Zero)
         {
             Console.WriteLine("[stack] FAIL could not create the probe windows");
@@ -175,13 +184,13 @@ internal static class StackProbe
         Paint(bubble, 320, 240, 260, 40);
         Paint(menu, 340, 320, 200, 120);
 
-        // A drag raises the pet on every move, with no restack: the reported bug.
+        // ——— the old, sibling arrangement: the bug must still reproduce ———
         Restack(pet, bubble, menu, false, true);
         Raise(pet);
         Check("drag raises the pet alone (must reproduce)", Verdict(pet, bubble, menu, false), false);
 
         Restack(pet, bubble, menu, false, true);
-        Check("drag then Restack", Verdict(pet, bubble, menu, false), true);
+        Check("drag then relative Restack", Verdict(pet, bubble, menu, false), true);
 
         // A new message repaints the bubble, which raises it while the menu is open.
         Paint(bubble, 320, 240, 260, 40);
@@ -189,21 +198,47 @@ internal static class StackProbe
         Check("bubble repaint alone (must reproduce)", Verdict(pet, bubble, menu, true), false);
 
         Restack(pet, bubble, menu, true, true);
-        Check("bubble repaint then Restack", Verdict(pet, bubble, menu, true), true);
+        Check("bubble repaint then relative Restack", Verdict(pet, bubble, menu, true), true);
 
         // A scale change moves AND resizes the pet.
         SetWindowPos(pet, (IntPtr)(-1), 260, 260, 360, 200, SWP_NOACTIVATE);
         Check("scale change raises the pet alone (must reproduce)", Verdict(pet, bubble, menu, true), false);
 
         Restack(pet, bubble, menu, true, true);
-        Check("scale change then Restack", Verdict(pet, bubble, menu, true), true);
+        Check("scale change then relative Restack", Verdict(pet, bubble, menu, true), true);
+
+        // ——— the new arrangement: the bubble is OWNED by the pet ———
+        // Ownership is what makes the fix immune to any number of raises, so it is measured
+        // directly rather than inferred from the absence of a failure.
+        IntPtr ownedBubble = Make("StackProbeOwnedBubble", inst, pet);
+        IntPtr ownedMenu = Make("StackProbeOwnedMenu", inst, pet);
+        Paint(ownedBubble, 322, 236, 260, 40);
+        Paint(ownedMenu, 342, 318, 200, 120);
+        Check("the probe recorded the owner", GetWindow(ownedBubble, GW_OWNER) == pet ? "ok" : "no owner", true);
+
+        bool buried = false;
+        for (int i = 0; i < 20 && !buried; i++)
+        {
+            // The exact call a drag used to make on every tick.
+            SetWindowPos(pet, (IntPtr)(-1), 300 + i, 300, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            if (Verdict(pet, ownedBubble, ownedMenu, false) != "ok") buried = true;
+        }
+        Check("owned bubble survives 20 band raises of the pet", buried ? "pet covers bubble" : "ok", true);
+
+        // Ownership cannot order the two siblings against each other; relative placement can.
+        Restack(pet, ownedBubble, ownedMenu, true, true);
+        Check("owned menu in front of the owned bubble", Verdict(pet, ownedBubble, ownedMenu, true), true);
+        Raise(ownedBubble);
+        Check("bubble raised above the menu (must reproduce)", Verdict(pet, ownedBubble, ownedMenu, true), false);
+        Restack(pet, ownedBubble, ownedMenu, true, true);
+        Check("relative Restack repairs the sibling order", Verdict(pet, ownedBubble, ownedMenu, true), true);
 
         // With the menu closed the bubble still has to sit above the pet.
-        Restack(pet, bubble, menu, false, true);
-        Check("menu closed, Restack", Verdict(pet, bubble, menu, false), true);
+        Restack(pet, ownedBubble, ownedMenu, false, true);
+        Check("menu closed, relative Restack", Verdict(pet, ownedBubble, ownedMenu, false), true);
 
         Console.WriteLine(_failures == 0
-            ? "[stack] ok — " + _checks + " checks; the bug still reproduces without Restack"
+            ? "[stack] ok — " + _checks + " checks; a band raise still buries a sibling, ownership and relative placement do not"
             : "[stack] " + _failures + " of " + _checks + " checks failed");
         return _failures == 0 ? 0 : 1;
     }

@@ -1,0 +1,3 @@
+# dsh-lite-pet · 项目记忆
+
+- [2026-11-14] **气泡「上下跳」的真正成因是 band-wide raise，不是缺 raise**。宠物/气泡/菜单是三个 topmost 兄弟窗口；一次拖拽 tick 里 `SetWindowPos(pet, HWND_TOPMOST, …)` 把宠物提到 band 最前，气泡在整个 tick 里都在宠物后面，直到末尾 `Restack()` 才抬回来（12ms/tick = 肉眼看到的一闪一闪）。实测：`UpdateLayeredWindow` **不改 z-order**（idx 7→7），所以旧代码「Paint 后补一次 raise」既无效又是抖动来源。修法有两条，一起用：①**气泡/菜单创建时以宠物为 owner**（`CreateWindowEx` 的 hwndParent），Windows 保证 owned 窗口恒在 owner 之上，任何次数的 raise 都压不住它——实测 40 次 `HWND_TOPMOST` + 40 次无 raise 移动全部通过；②需要精确位置时用**相对定位**（`SetWindowPos(hwnd, 某具体窗口hwnd, …, SWP_NOOWNERZORDER)`），不要 `HWND_TOPMOST`。ownership 表达不了**兄弟之间**的顺序（气泡 vs 菜单），那一条必须由宠物用相对定位显式声明。拖拽/缩放路径里的 raise 也一并去掉，改成 `SWP_NOZORDER` 移动。

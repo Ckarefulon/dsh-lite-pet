@@ -74,16 +74,19 @@ namespace DshLitePet
         private bool _open;
 
         /// <summary>
-        /// Raises the menu when it is on screen, doing nothing otherwise.
+        /// The menu's window handle while it is actually open, or zero.
         ///
-        /// Only meaningful through <see cref="Program.Restack"/>: the menu is the front-most
-        /// member of the pet's window stack and must stay there for as long as it is open,
-        /// but it does not exist as a visible window before the first Show.
+        /// The menu does not place itself. It is the front-most of the pet's three windows, and
+        /// the only window that knows both the bubble's and the menu's handles — and can
+        /// therefore say which of the two is in front — is the pet. So the menu reports its
+        /// handle and the pet orders it.
+        ///
+        /// A handle that exists but is hidden must not be reported: every drag tick would then
+        /// pay for a needless SetWindowPos on a window nobody can see.
         /// </summary>
-        internal void RaisePopup()
+        internal IntPtr HandleWhenOpen
         {
-            if (!_open) return;
-            RaiseRaw();
+            get { return _open && Hwnd != IntPtr.Zero ? Hwnd : IntPtr.Zero; }
         }
         private int _chosenCommand;
         private int _hoverX = int.MinValue;
@@ -229,7 +232,7 @@ namespace DshLitePet
         {
             if (Trace.Enabled) Trace.Note("menu: show, rootItems=" + _panels[0].Items.Count.ToString());
             if (_panels[0].Items.Count == 0) return 0;
-            if (Hwnd == IntPtr.Zero) CreateWindow(10, 10);
+            if (Hwnd == IntPtr.Zero) CreateWindow(10, 10, AfterTarget);
             if (Trace.Enabled) Trace.Note("menu: hwnd=" + Hwnd.ToString());
             if (Hwnd == IntPtr.Zero) return 0;
 
@@ -252,11 +255,11 @@ namespace DshLitePet
             // the menu nor the pet.
             Native.SetCapture(Hwnd);
             Relayout();
-            // Raise above the pet, which is topmost too. Within the topmost band the order is
-            // whoever was raised last, and the pet is raised on every drag and scale change —
-            // so the ordering is asked for from the owner, which owns the whole stack
-            // (pet ▸ bubble ▸ menu) and can put the menu in front of both.
-            Raise();
+            // In front of the pet AND its bubble. The pet is told to restate the whole order
+            // rather than this window raising itself: a band-wide raise puts the menu above every
+            // other topmost window on the desktop too, and cannot express "above the bubble but
+            // nowhere else".
+            PlaceInFront();
 
             while (_open)
             {

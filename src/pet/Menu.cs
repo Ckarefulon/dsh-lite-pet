@@ -32,16 +32,17 @@ namespace DshLitePet
         }
 
         /// <summary>
-        /// Raises the open menu, or does nothing when it is closed.
-        ///
-        /// Called by <see cref="Program.Restack"/>: the menu is the front-most window in the
-        /// pet's stack and must stay in front of both the pet and the bubble for as long as
-        /// it is on screen.
+        /// The open menu's window handle, or zero when it is closed. The pet needs it to place
+        /// the menu in front of the bubble: both are owned by the pet, so ownership alone cannot
+        /// order them against each other.
         /// </summary>
-        internal void RaisePopup()
+        internal IntPtr HandleWhenOpen { get { return _popup == null ? IntPtr.Zero : _popup.HandleWhenOpen; } }
+
+        /// <summary>Gives the popup the pet as its owner the first time it is shown.</summary>
+        internal void SetOwner(IntPtr pet)
         {
-            if (_popup == null) return;
-            _popup.RaisePopup();
+            if (_popup == null) _popup = new PopupMenu();
+            _popup.AfterTarget = pet;
         }
 
         /// <summary>Shows the menu. Returns the chosen command and, for 调整大小, the requested scale.</summary>

@@ -138,44 +138,58 @@ if (/'interrupted'/.test(functionBody(host, 'function failureText(') ?? '')) {
   fail('failureText treats a shell restart artefact as a user-visible error')
 }
 
-// ——— 5) the stacking order is an invariant ——————————————————————
+// ——— 5) the stacking order is an invariant, not a per-tick repair ——————
 
-if (!/internal static Action RestackRequest/.test(layered)) {
-  fail('LayeredPopup has no owner-installed restack hook')
+// Ownership is the mechanism that makes the bubble immune to the pet being raised at all:
+// an owned window is always above its owner, so a drag cannot bury it for a tick. If the
+// bubble is ever created without the pet as its owner, the flicker comes back.
+if (!/internal void Create\(IntPtr owner\)/.test(bubble)) {
+  fail('BubbleWindow.Create no longer takes the pet as owner, so nothing keeps it above the pet')
 }
-if (!/protected void Raise\(\)/.test(layered)) {
-  fail('LayeredPopup.Raise is missing, so a raise cannot consult the stack')
+if (!/CreateWindow\(Width, _height, owner\)/.test(bubble)) {
+  fail("BubbleWindow.Create does not pass the owner through to CreateWindowEx")
 }
-if (!/private static void Restack\(\)/.test(program)) {
-  fail('Program has no Restack, so the three windows cannot be ordered together')
+if (!/_bubble\.Create\(_hwnd\)/.test(program)) {
+  fail('the bubble is not created as an owned window of the pet')
 }
-if (!/LayeredPopup\.RestackRequest = Restack/.test(program)) {
-  fail('Restack is never installed, so every raise stays a single-window raise')
+// A band-wide raise is order-unstable by construction: it demotes everything that is not
+// raised in the same breath. That is what made the bubble blink through the pet during a
+// drag, so neither satellite may reach for the front of the band any more.
+if (/HWND_TOPMOST/.test(bubble)) {
+  fail('BubbleWindow still raises itself to the front of the topmost band')
 }
 {
-  // The order inside Restack: pet first (back), then bubble, then menu (front). Raising
-  // front-to-back would invert the result because the LAST raise ends up on top.
-  const restack = functionBody(program, 'private static void Restack(')
-  if (restack === null) {
-    fail('could not find Restack')
-  } else {
-    const pet = restack.indexOf('SetWindowPos(_hwnd')
-    const bubbleRaise = restack.indexOf('_bubble.RaiseWhenVisible')
-    const menuRaise = restack.indexOf('_menu.RaisePopup')
-    if (pet < 0 || bubbleRaise < 0 || menuRaise < 0) {
-      fail('Restack does not raise all three windows')
-    } else if (!(pet < bubbleRaise && bubbleRaise < menuRaise)) {
-      fail('Restack raises in the wrong order: the pet must be raised first so it ends up behind')
-    }
+  const popup = readFileSync(join(ROOT, 'src', 'pet', 'PopupMenu.cs'), 'utf8')
+  if (/internal void RaisePopup\(\)[\s\S]{0,200}SetWindowPos/.test(popup)) {
+    fail('the menu still raises itself with a band-wide raise instead of asking the pet to order it')
+  }
+  if (!/PlaceInFront\(\)/.test(popup)) {
+    fail('the menu never asks for its place in the stack, so it can open behind the bubble')
+  }
+  if (!/internal IntPtr HandleWhenOpen/.test(popup)) {
+    fail('the menu hides its handle, so the pet cannot order it against the bubble')
   }
 }
-// A drag moves the pet, and every such move used to put it in front of its own bubble.
-if (!/The bubble has to follow the pet[\s\S]{0,600}Restack\(\);/.test(program)) {
-  fail('dragging the pet does not restore the stacking order afterwards')
+// The relative placement must exist and be installed by the pet, which is the only window
+// that knows all three handles.
+if (!/private static bool PlacePetBehind\(IntPtr above\)/.test(program)) {
+  fail('Program has no relative z-order placement, so ordering stays a per-tick race')
 }
-// The bubble must not raise itself directly any more; only Restack may reorder the band.
-if (/Native\.SetWindowPos\(Hwnd, \(IntPtr\)\(-1\)/.test(bubble)) {
-  fail('BubbleWindow still raises itself directly instead of through the stack')
+if (!/LayeredPopup\.RestackRequest = Restack/.test(program)) {
+  fail('the restack is never installed, so a satellite cannot get its place restored')
+}
+if (!/Action restack = RestackRequest;[\s\S]{0,120}restack\(\); return;/.test(layered)) {
+  fail('LayeredPopup.PlaceInFront does not ask the pet to restate the order')
+}
+// Dragging must not raise the pet: every such raise used to put it in front of its bubble.
+{
+  const drag = functionBody(program, 'private static void UpdateDrag(') ?? ''
+  if (/SetWindowPos\(_hwnd, \(IntPtr\)\(-1\)/.test(drag)) {
+    fail('the drag still raises the pet to the front of the band on every move')
+  }
+  if (!/Restack\(\)/.test(drag)) {
+    fail('dragging the pet does not restate the stacking order afterwards')
+  }
 }
 
 // ——— 6) the red dot exists on the C# side too ————————————————————
